@@ -14,7 +14,7 @@ export default function ManageCreditCardsPage() {
   const [error, setError] = useState('');
 
   const fetchCards = () => {
-    api.get('/credit-cards').then(({ data }) => setCards(data)).catch(console.error);
+    api.get('/credit-card-names').then(({ data }) => setCards(data)).catch(console.error);
   };
 
   useEffect(() => {
@@ -25,7 +25,7 @@ export default function ManageCreditCardsPage() {
     e.preventDefault();
     setError('');
     try {
-      await api.post('/credit-cards', { name });
+      await api.post('/credit-card-names', { name });
       setName('');
       fetchCards();
     } catch (err) {
@@ -36,7 +36,7 @@ export default function ManageCreditCardsPage() {
   const deleteCard = async (id) => {
     if(!window.confirm("Are you sure?")) return;
     try {
-        await api.delete(`/credit-cards/${id}`);
+        await api.delete(`/credit-card-names/${id}`);
         fetchCards();
     } catch (err) {
         alert("Failed to delete");

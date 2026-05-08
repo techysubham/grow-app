@@ -11,6 +11,7 @@ import {
     TableHead,
     TablePagination,
     TableRow,
+    TableSortLabel,
     Dialog,
     DialogTitle,
     Accordion,
@@ -30,11 +31,13 @@ import {
     ToggleButton,
     ToggleButtonGroup,
     Divider,
+    Switch,
     useMediaQuery,
     useTheme,
     CircularProgress
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
+import DownloadIcon from '@mui/icons-material/Download';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
@@ -84,7 +87,7 @@ const MobileTransactionCard = ({ txn, onEdit, onDelete }) => {
                         sx={{ fontWeight: 700 }}
                     />
                     <Chip
-                        label={txn.source}
+                        label={txn.source === 'PAYONEER' ? 'payoneer' : 'manual'}
                         size="small"
                         color={txn.source === 'PAYONEER' ? 'primary' : 'default'}
                         variant={txn.source === 'PAYONEER' ? 'filled' : 'outlined'}
@@ -112,14 +115,16 @@ const MobileTransactionCard = ({ txn, onEdit, onDelete }) => {
                     )}
                 </Box>
 
-                {txn.source === 'MANUAL' && (
+                {(txn.source === 'MANUAL' || txn.source === 'PAYONEER') && (
                     <Stack direction="row" justifyContent="flex-end" spacing={1}>
                         <IconButton size="small" onClick={onEdit} color="primary">
                             <EditIcon />
                         </IconButton>
-                        <IconButton size="small" onClick={onDelete} color="error">
-                            <DeleteIcon />
-                        </IconButton>
+                        {txn.source === 'MANUAL' && (
+                            <IconButton size="small" onClick={onDelete} color="error">
+                                <DeleteIcon />
+                            </IconButton>
+                        )}
                     </Stack>
                 )}
             </Stack>
@@ -139,6 +144,8 @@ const TransactionPage = () => {
     const [creditCardSummary, setCreditCardSummary] = useState([]); // NEW
     const [openDialog, setOpenDialog] = useState(false);
     const [loading, setLoading] = useState(false);
+    const [exportLoading, setExportLoading] = useState(false);
+    const [sendToggleLoadingId, setSendToggleLoadingId] = useState('');
     const [pageLoading, setPageLoading] = useState(true);
 
     // Pagination and Filter State
@@ -153,9 +160,11 @@ const TransactionPage = () => {
     const [filterEndDate, setFilterEndDate] = useState('');
     const [filterBankAccount, setFilterBankAccount] = useState('');
     const [filterType, setFilterType] = useState('');
+    const [dateSortOrder, setDateSortOrder] = useState('desc');
 
     // Editing state
     const [editingId, setEditingId] = useState(null);
+    const [editingSource, setEditingSource] = useState('MANUAL');
 
     const [formData, setFormData] = useState({
         date: new Date().toISOString().split('T')[0],
@@ -175,7 +184,7 @@ const TransactionPage = () => {
 
     useEffect(() => {
         fetchTransactions();
-    }, [page, rowsPerPage, dateMode, filterSingleDate, filterStartDate, filterEndDate, filterBankAccount, filterType]);
+    }, [page, rowsPerPage, dateMode, filterSingleDate, filterStartDate, filterEndDate, filterBankAccount, filterType, dateSortOrder]);
 
     const fetchCreditCards = async () => {
         try {
@@ -195,16 +204,22 @@ const TransactionPage = () => {
         }
     };
 
+    const buildTransactionListParams = () => ({
+        ...(dateMode === 'range' && filterStartDate && { startDate: filterStartDate }),
+        ...(dateMode === 'range' && filterEndDate && { endDate: filterEndDate }),
+        ...(dateMode === 'single' && filterSingleDate && { startDate: filterSingleDate, endDate: filterSingleDate }),
+        ...(filterBankAccount && { bankAccount: filterBankAccount }),
+        ...(filterType && { transactionType: filterType }),
+        sortBy: 'date',
+        sortOrder: dateSortOrder
+    });
+
     const fetchTransactions = async () => {
         try {
             const params = {
                 page: page + 1,
                 limit: rowsPerPage,
-                ...(dateMode === 'range' && filterStartDate && { startDate: filterStartDate }),
-                ...(dateMode === 'range' && filterEndDate && { endDate: filterEndDate }),
-                ...(dateMode === 'single' && filterSingleDate && { startDate: filterSingleDate, endDate: filterSingleDate }),
-                ...(filterBankAccount && { bankAccount: filterBankAccount }),
-                ...(filterType && { transactionType: filterType })
+                ...buildTransactionListParams()
             };
             const { data } = await api.get('/transactions', { params });
             setTransactions(data.transactions || []);
@@ -235,8 +250,73 @@ const TransactionPage = () => {
         setFilterBankAccount('');
         setFilterType('');
         setDateMode('range');
+        setDateSortOrder('desc');
         setRowsPerPage(50);
         setPage(0);
+    };
+
+    const handleDateSortToggle = () => {
+        setDateSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+        setPage(0);
+    };
+
+    const handleDownloadCsv = async () => {
+        try {
+            setExportLoading(true);
+            const response = await api.get('/transactions/export-csv', {
+                params: buildTransactionListParams(),
+                responseType: 'blob'
+            });
+
+            const contentDisposition = response.headers['content-disposition'];
+            let filename = `transactions_${new Date().toISOString().slice(0, 10)}.csv`;
+            if (contentDisposition) {
+                const filenameMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+                if (filenameMatch?.[1]) {
+                    filename = filenameMatch[1].replace(/"/g, '').trim();
+                }
+            }
+
+            const downloadUrl = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            link.setAttribute('download', filename);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(downloadUrl);
+        } catch (error) {
+            console.error('CSV export failed:', error);
+            let msg = error.message;
+            if (error.response?.data instanceof Blob) {
+                try {
+                    const text = await error.response.data.text();
+                    const parsed = JSON.parse(text);
+                    msg = parsed.error || msg;
+                } catch {
+                    msg = 'Failed to download CSV';
+                }
+            } else if (error.response?.data?.error) {
+                msg = error.response.data.error;
+            }
+            alert(msg);
+        } finally {
+            setExportLoading(false);
+        }
+    };
+
+    const handleSendToggle = async (txnId, enabled) => {
+        try {
+            setSendToggleLoadingId(txnId);
+            await api.patch(`/transactions/${txnId}/send-toggle`, { enabled });
+            setTransactions((prev) =>
+                prev.map((t) => (t._id === txnId ? { ...t, sendEnabled: enabled } : t))
+            );
+        } catch (error) {
+            alert(error.response?.data?.error || 'Failed to update send toggle');
+        } finally {
+            setSendToggleLoadingId('');
+        }
     };
 
     const fetchBankAccounts = async () => {
@@ -263,7 +343,11 @@ const TransactionPage = () => {
         try {
             setLoading(true);
             if (editingId) {
-                await api.put(`/transactions/${editingId}`, formData);
+                if (editingSource === 'PAYONEER') {
+                    await api.put(`/transactions/${editingId}`, { date: formData.date, remark: formData.remark });
+                } else {
+                    await api.put(`/transactions/${editingId}`, formData);
+                }
             } else {
                 await api.post('/transactions', formData);
             }
@@ -292,6 +376,7 @@ const TransactionPage = () => {
 
     const startEdit = (txn) => {
         setEditingId(txn._id);
+        setEditingSource(txn.source || 'MANUAL');
         setFormData({
             date: txn.date ? txn.date.split('T')[0] : '',
             bankAccount: txn.bankAccount?._id,
@@ -306,6 +391,7 @@ const TransactionPage = () => {
     const handleClose = () => {
         setOpenDialog(false);
         setEditingId(null);
+        setEditingSource('MANUAL');
         setFormData({
             date: new Date().toISOString().split('T')[0],
             bankAccount: '',
@@ -332,14 +418,25 @@ const TransactionPage = () => {
                 mb={3}
             >
                 <Typography variant="h5">Transactions</Typography>
-                <Button
-                    variant="contained"
-                    startIcon={<AddIcon />}
-                    onClick={() => setOpenDialog(true)}
-                    fullWidth={isMobile}
-                >
-                    Add Transaction
-                </Button>
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ width: { xs: '100%', sm: 'auto' } }}>
+                    <Button
+                        variant="outlined"
+                        startIcon={<DownloadIcon />}
+                        onClick={handleDownloadCsv}
+                        disabled={exportLoading}
+                        fullWidth={isMobile}
+                    >
+                        {exportLoading ? 'Downloading…' : 'Download CSV'}
+                    </Button>
+                    <Button
+                        variant="contained"
+                        startIcon={<AddIcon />}
+                        onClick={() => setOpenDialog(true)}
+                        fullWidth={isMobile}
+                    >
+                        Add Transaction
+                    </Button>
+                </Stack>
             </Stack>
 
             {/* Filters Section */}
@@ -595,8 +692,17 @@ const TransactionPage = () => {
                 <Table>
                     <TableHead>
                         <TableRow sx={{ bgcolor: '#f5f5f5' }}>
-                            <TableCell>Date</TableCell>
+                            <TableCell sortDirection={dateSortOrder}>
+                                <TableSortLabel
+                                    active
+                                    direction={dateSortOrder}
+                                    onClick={handleDateSortToggle}
+                                >
+                                    Date
+                                </TableSortLabel>
+                            </TableCell>
                             <TableCell>Bank Account</TableCell>
+                            <TableCell>Send</TableCell>
                             <TableCell>Type</TableCell>
                             <TableCell>Remark</TableCell>
                             <TableCell>Source</TableCell>
@@ -609,6 +715,18 @@ const TransactionPage = () => {
                             <TableRow key={txn._id}>
                                 <TableCell>{new Date(txn.date).toLocaleDateString()}</TableCell>
                                 <TableCell>{txn.bankAccount?.name}</TableCell>
+                                <TableCell>
+                                    {txn.source === 'PAYONEER' ? (
+                                        <Switch
+                                            size="small"
+                                            checked={Boolean(txn.sendEnabled)}
+                                            onChange={(e) => handleSendToggle(txn._id, e.target.checked)}
+                                            disabled={sendToggleLoadingId === txn._id}
+                                        />
+                                    ) : (
+                                        '-'
+                                    )}
+                                </TableCell>
                                 <TableCell>
                                     <Chip
                                         label={txn.transactionType}
@@ -627,7 +745,7 @@ const TransactionPage = () => {
                                 </TableCell>
                                 <TableCell>
                                     <Chip
-                                        label={txn.source}
+                                        label={txn.source === 'PAYONEER' ? 'payoneer' : 'manual'}
                                         size="small"
                                         color={txn.source === 'PAYONEER' ? 'primary' : 'default'}
                                         variant={txn.source === 'PAYONEER' ? 'filled' : 'outlined'}
@@ -637,14 +755,16 @@ const TransactionPage = () => {
                                     {txn.transactionType === 'Credit' ? '+' : '-'} ₹{txn.amount?.toFixed(2)}
                                 </TableCell>
                                 <TableCell align="right">
-                                    {txn.source === 'MANUAL' && (
+                                    {(txn.source === 'MANUAL' || txn.source === 'PAYONEER') && (
                                         <>
                                             <IconButton size="small" onClick={() => startEdit(txn)} color="primary">
                                                 <EditIcon />
                                             </IconButton>
-                                            <IconButton size="small" onClick={() => handleDelete(txn._id)} color="error">
-                                                <DeleteIcon />
-                                            </IconButton>
+                                            {txn.source === 'MANUAL' && (
+                                                <IconButton size="small" onClick={() => handleDelete(txn._id)} color="error">
+                                                    <DeleteIcon />
+                                                </IconButton>
+                                            )}
                                         </>
                                     )}
                                 </TableCell>
@@ -652,7 +772,7 @@ const TransactionPage = () => {
                         ))}
                         {transactions.length > 0 && (
                             <TableRow sx={{ backgroundColor: '#fafafa' }}>
-                                <TableCell colSpan={5} align="right">
+                                <TableCell colSpan={6} align="right">
                                     <strong>Page Total:</strong>
                                 </TableCell>
                                 <TableCell align="right">
@@ -675,7 +795,7 @@ const TransactionPage = () => {
                         )}
                         {transactions.length === 0 && (
                             <TableRow>
-                                <TableCell colSpan={7} align="center">No transactions found.</TableCell>
+                                <TableCell colSpan={8} align="center">No transactions found.</TableCell>
                             </TableRow>
                         )}
                     </TableBody>
@@ -712,7 +832,11 @@ const TransactionPage = () => {
                 fullWidth
                 maxWidth="sm"
             >
-                <DialogTitle>{editingId ? 'Edit Transaction' : 'Add Manual Transaction'}</DialogTitle>
+                <DialogTitle>
+                    {editingId
+                        ? (editingSource === 'PAYONEER' ? 'Edit Payoneer Transaction (Date & Remark)' : 'Edit Transaction')
+                        : 'Add Manual Transaction'}
+                </DialogTitle>
                 <DialogContent sx={{ minWidth: { xs: 'auto', sm: 300 } }}>
                     <Box display="flex" flexDirection="column" gap={2} mt={1}>
                         <TextField
@@ -730,6 +854,7 @@ const TransactionPage = () => {
                             fullWidth
                             value={formData.bankAccount}
                             onChange={(e) => setFormData({ ...formData, bankAccount: e.target.value })}
+                            disabled={editingId && editingSource === 'PAYONEER'}
                         >
                             {bankAccounts.map((acc) => (
                                 <MenuItem key={acc._id} value={acc._id}>
@@ -739,7 +864,7 @@ const TransactionPage = () => {
                         </TextField>
 
                         {/* NEW: Credit Card Dropdown for Debit */}
-                        {formData.transactionType === 'Debit' && (
+                        {formData.transactionType === 'Debit' && editingSource !== 'PAYONEER' && (
                             <TextField
                                 select
                                 label="To (Credit Card Name)"
@@ -779,6 +904,7 @@ const TransactionPage = () => {
                                     }
                                 }}
                                 fullWidth
+                                disabled={editingId && editingSource === 'PAYONEER'}
                             >
                                 <ToggleButton value="Credit" color="success">Credit</ToggleButton>
                                 <ToggleButton value="Debit" color="error">Debit</ToggleButton>
@@ -791,6 +917,7 @@ const TransactionPage = () => {
                             fullWidth
                             value={formData.amount}
                             onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+                            disabled={editingId && editingSource === 'PAYONEER'}
                         />
 
                         <TextField

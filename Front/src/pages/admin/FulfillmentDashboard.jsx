@@ -1931,7 +1931,7 @@ function FulfillmentDashboard() {
   useEffect(() => {
     if (!hasFetchedInitialData.current) {
       api.get('/amazon-accounts').then(({ data }) => setAmazonAccounts(data || [])).catch(console.error);
-      api.get('/credit-cards').then(({ data }) => setCreditCards(data || [])).catch(console.error);
+      api.get('/credit-card-names').then(({ data }) => setCreditCards(data || [])).catch(console.error);
 
       loadResolutionOptions();
     }

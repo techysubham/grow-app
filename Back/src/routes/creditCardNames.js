@@ -16,7 +16,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // Create a new credit card name
-router.post('/', requireAuth, requirePageAccess('CreditCardNames'), async (req, res) => {
+router.post('/', requireAuth, requirePageAccess('CreditCards'), async (req, res) => {
     try {
         const { name } = req.body;
         if (!name || !name.trim()) {
@@ -36,7 +36,7 @@ router.post('/', requireAuth, requirePageAccess('CreditCardNames'), async (req, 
 });
 
 // Delete a credit card name
-router.delete('/:id', requireAuth, requirePageAccess('CreditCardNames'), async (req, res) => {
+router.delete('/:id', requireAuth, requirePageAccess('CreditCards'), async (req, res) => {
     try {
         const card = await CreditCardName.findByIdAndDelete(req.params.id);
         if (!card) {

@@ -93,7 +93,7 @@ export default function OrdersDepartmentDashboardPage() {
   const [sellers, setSellers] = useState([]);
   const [selectedSeller, setSelectedSeller] = useState('');
   const [date, setDate] = useState(() => sessionStorage.getItem(DASHBOARD_DATE_KEY) || getTodayPtDateString());
-  const [excludeLowValue, setExcludeLowValue] = useState(false);
+  const [excludeLowValue, setExcludeLowValue] = useState(true);
 
   const [overview, setOverview] = useState(null);
   const [monthlyDelta, setMonthlyDelta] = useState([]);

@@ -29,6 +29,7 @@ import {
     Chip
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
+import SyncIcon from '@mui/icons-material/Sync';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -273,6 +274,7 @@ const PayoneerSheetPage = () => {
     const [bankAccounts, setBankAccounts] = useState([]);
     const [openDialog, setOpenDialog] = useState(false);
     const [loading, setLoading] = useState(false);
+    const [gmailSyncLoading, setGmailSyncLoading] = useState(false);
     const [pageLoading, setPageLoading] = useState(true);
 
     const [searchParams, setSearchParams] = useSearchParams();
@@ -415,6 +417,21 @@ const PayoneerSheetPage = () => {
         } finally {
             setLoading(false);
             setPageLoading(false);
+        }
+    };
+
+    const handleSyncGmail = async () => {
+        try {
+            setGmailSyncLoading(true);
+            const { data } = await api.post('/payoneer/import-gmail', { limit: 50 });
+            await fetchRecords();
+            alert(
+                `Gmail sync complete. Updated: ${data?.updated || 0}, Matched: ${data?.matched || 0}, Scanned: ${data?.scanned || 0}, Skipped: ${data?.skipped || 0}`
+            );
+        } catch (error) {
+            alert(error.response?.data?.error || 'Failed to sync Gmail data');
+        } finally {
+            setGmailSyncLoading(false);
         }
     };
 
@@ -812,6 +829,15 @@ const PayoneerSheetPage = () => {
                     Payoneer Sheet
                 </Typography>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ width: { xs: '100%', sm: 'auto' } }}>
+                    <Button
+                        variant="outlined"
+                        startIcon={<SyncIcon />}
+                        onClick={handleSyncGmail}
+                        disabled={gmailSyncLoading}
+                        fullWidth={isSmallMobile}
+                    >
+                        {gmailSyncLoading ? 'Syncing Gmail…' : 'Sync Gmail'}
+                    </Button>
                     <Button
                         variant="outlined"
                         startIcon={<AccountBalanceIcon />}

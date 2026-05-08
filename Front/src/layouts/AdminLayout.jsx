@@ -107,7 +107,6 @@ import ManageAmazonAccountsPage from '../pages/admin/ManageAmazonAccountsPage.js
 import InternalMessagesPage from '../pages/admin/InternalMessagesPage.jsx';
 import InternalMessagesAdminPage from '../pages/admin/InternalMessagesAdminPage.jsx';
 import ManageCreditCardsPage from '../pages/admin/ManageCreditCardsPage.jsx';
-import ManageCreditCardNamesPage from '../pages/admin/ManageCreditCardNamesPage.jsx';
 import AffiliateOrdersPage from '../pages/admin/AffiliateOrdersPage.jsx';
 import LinkIcon from '@mui/icons-material/Link';
 import IdeasPage from '../pages/IdeasPage.jsx';
@@ -288,7 +287,6 @@ const COMPONENT_MAP = {
   'BankAccounts': BankAccountsPage,
   'Transactions': TransactionPage,
   'ExtraExpenses': ExtraExpensePage,
-  'CreditCardNames': ManageCreditCardNamesPage,
   'Salary': SalaryPage,
   'AllOrdersSheet': AllOrdersSheetPage,
   'PriceChangeHistory': PriceChangeHistoryPage,
@@ -904,6 +902,8 @@ export default function AdminLayout({ user, onLogout }) {
 
           {/* User Performance - accessible to all */}
           <Route path="/user-performance" element={<UserPerformancePage />} />
+
+          <Route path="/credit-card-names" element={<Navigate to="/admin/credit-cards" replace />} />
 
           {/* Dynamic page routes based on access */}
           {PAGE_REGISTRY.map(page => {

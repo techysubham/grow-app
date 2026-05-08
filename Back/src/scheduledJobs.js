@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import Attendance from './models/Attendance.js';
 import { runScheduledUploads } from './lib/ebayFeedUpload.js';
 import { scheduledSyncAllSellers, scheduledRunAutoCompatForDate } from './routes/ebay.js';
+import { importTransactionsFromGmail } from './utils/gmailTransactionImporter.js';
 
 export function initializeScheduledJobs() {
     // Auto-stop all active timers daily at 2:00 AM
@@ -83,4 +84,21 @@ export function initializeScheduledJobs() {
     }, { timezone: 'Asia/Kolkata' });
 
     console.log('[CRON] Scheduled job initialized: Auto-Compat Run for Date at 3:00 AM IST');
+
+    // Optional Gmail import into Transactions
+    const gmailImportEnabled = String(process.env.GMAIL_IMPORT_ENABLED || '').toLowerCase() === 'true';
+    if (gmailImportEnabled) {
+        const cronExpr = String(process.env.GMAIL_IMPORT_CRON || '*/5 * * * *').trim();
+        cron.schedule(cronExpr, async () => {
+            try {
+                const report = await importTransactionsFromGmail({
+                    limit: Math.max(1, Math.min(100, Number(process.env.GMAIL_IMPORT_LIMIT || 25)))
+                });
+                console.log(`[CRON] Gmail import scanned=${report.scanned} imported=${report.imported} skipped=${report.skipped}`);
+            } catch (err) {
+                console.error('[CRON] Gmail import error:', err.message);
+            }
+        });
+        console.log(`[CRON] Scheduled job initialized: Gmail import (${cronExpr})`);
+    }
 }

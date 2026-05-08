@@ -2,6 +2,7 @@ import express from 'express';
 import PayoneerRecord from '../models/PayoneerRecord.js';
 import Transaction from '../models/Transaction.js';
 import { requireAuth, requirePageAccess } from '../middleware/auth.js';
+import { importPayoneerFieldsFromGmail } from '../utils/gmailPayoneerImporter.js';
 
 const router = express.Router();
 
@@ -81,6 +82,17 @@ router.get('/', requireAuth, requirePageAccess('Payoneer'), async (req, res) => 
             totalPages: Math.ceil(totalRecords / parseInt(limit)),
             currentPage: parseInt(page)
         });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/payoneer/import-gmail - match payout IDs from Gmail and fill exchange/deposit
+router.post('/import-gmail', requireAuth, requirePageAccess('Payoneer'), async (req, res) => {
+    try {
+        const limit = Math.max(1, Math.min(100, Number(req.body?.limit || 50)));
+        const report = await importPayoneerFieldsFromGmail({ limit });
+        res.json(report);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -216,9 +228,13 @@ router.put('/:id', requireAuth, requirePageAccess('Payoneer'), async (req, res) 
                 {
                     date: record.paymentDate,
                     bankAccount: record.bankAccount._id, // Direct ID
-                    amount: record.bankDeposit
+                    amount: record.bankDeposit,
+                    transactionType: 'Credit',
+                    source: 'PAYONEER',
+                    sourceId: record._id,
+                    remark: 'Payoneer'
                 },
-                { upsert: true }
+                { upsert: true, setDefaultsOnInsert: true }
             );
         } catch (syncErr) {
             console.error('Failed to sync update to Transaction:', syncErr);
