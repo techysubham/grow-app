@@ -38,6 +38,26 @@ import { parseAsins, getParsingStats, getValidationError } from '../../utils/asi
 import { generateSKUFromASIN } from '../../utils/skuGenerator.js';
 import { mergeDefaultCoreFieldDefaults } from '../../constants/defaultDescriptionTemplate.js';
 
+const DESCRIPTION_TEMPLATE_STORAGE_KEY = 'description-templates.gallery.v1';
+const STORE_TEMPLATE_MAP_KEY = 'store-description-template-map.v1';
+
+function resolveStoreDescriptionTemplate(sellerId) {
+  try {
+    if (!sellerId) return null;
+    const rawMap = localStorage.getItem(STORE_TEMPLATE_MAP_KEY);
+    const storeTemplateMap = rawMap ? JSON.parse(rawMap) : {};
+    const assignedTemplateId = storeTemplateMap?.[sellerId];
+    if (!assignedTemplateId) return null;
+
+    const rawTemplates = localStorage.getItem(DESCRIPTION_TEMPLATE_STORAGE_KEY);
+    const templates = rawTemplates ? JSON.parse(rawTemplates) : [];
+    if (!Array.isArray(templates)) return null;
+    return templates.find((template) => String(template?.id) === String(assignedTemplateId)) || null;
+  } catch {
+    return null;
+  }
+}
+
 export default function TemplateListingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -123,6 +143,7 @@ export default function TemplateListingsPage() {
 
   // List Directly dialog state
   const [listDirectlyDialog, setListDirectlyDialog] = useState(false);
+  const selectedStoreTemplate = resolveStoreDescriptionTemplate(sellerId);
 
   // Row selection state
   const [selectedListings, setSelectedListings] = useState(new Set());
@@ -281,7 +302,18 @@ export default function TemplateListingsPage() {
         ? `/template-overrides/${templateId}/effective?sellerId=${sellerId}`
         : `/listing-templates/${templateId}`;
       const { data } = await api.get(endpoint);
-      setTemplate(data);
+      const storeTemplate = resolveStoreDescriptionTemplate(sellerId);
+      if (storeTemplate?.html) {
+        setTemplate({
+          ...data,
+          coreFieldDefaults: {
+            ...(data?.coreFieldDefaults || {}),
+            description: storeTemplate.html
+          }
+        });
+      } else {
+        setTemplate(data);
+      }
     } catch (err) {
       setError('Failed to fetch template');
       console.error(err);
@@ -2420,6 +2452,8 @@ export default function TemplateListingsPage() {
       <AsinReviewModal
         open={reviewModal}
         marketplace={region}
+        sellerId={sellerId}
+        storeTemplateHtml={selectedStoreTemplate?.html || ''}
         onClose={() => {
           // Clean up EventSource if still active
           if (window._currentEventSource) {

@@ -4,6 +4,36 @@ import { processImagePlaceholders } from './imageReplacer.js';
 import { scrapeAmazonProductWithScraperAPI } from './scraperApiProduct.js';
 import { trackApiUsage } from './apiUsageTracker.js';
 import { getCachedAsinData, setCachedAsinData } from './asinCache.js';
+import { createEbayImageWithOverlay } from './imageProcessor.js';
+
+export async function applyOverlayToScrapedImages(imageUrls = []) {
+  const watermarkEnabled = String(process.env.ENABLE_SCRAPER_IMAGE_WATERMARK || '').toLowerCase() === 'true';
+  if (!watermarkEnabled || !Array.isArray(imageUrls) || imageUrls.length === 0) {
+    return Array.isArray(imageUrls) ? imageUrls : [];
+  }
+
+  const badgeName = String(process.env.SCRAPER_IMAGE_OVERLAY_BADGE || 'usa-seller').trim() || 'usa-seller';
+  const maxImages = Math.min(
+    imageUrls.length,
+    Math.max(1, Number(process.env.SCRAPER_IMAGE_OVERLAY_MAX_IMAGES || 3))
+  );
+
+  const processed = [...imageUrls];
+  const candidates = imageUrls.slice(0, maxImages);
+  const overlayResults = await Promise.allSettled(
+    candidates.map((url) => createEbayImageWithOverlay(url, badgeName))
+  );
+
+  overlayResults.forEach((result, index) => {
+    if (result.status === 'fulfilled' && result.value) {
+      processed[index] = result.value;
+    } else {
+      console.warn(`[fetchAmazonData] ⚠️ Overlay failed for image ${index + 1}, using original URL`);
+    }
+  });
+
+  return processed;
+}
 
 /**
  * Fetch Amazon product data by ASIN
@@ -56,7 +86,8 @@ export async function fetchAmazonData(asin, region = 'US') {
     }
     
     // Keep images as array (same as PAAPI format)
-    const imagesArray = Array.isArray(images) ? images : [];
+    const rawImagesArray = Array.isArray(images) ? images : [];
+    const imagesArray = await applyOverlayToScrapedImages(rawImagesArray);
     
     console.log(`[fetchAmazonData] ✅ Successfully fetched data for ${asin} in ${responseTime}ms`);
     console.log(`[fetchAmazonData] 📊 Extracted fields: Title="${title.substring(0, 40)}...", Brand="${brand}", Price="${price}", Images=${imagesArray.length} URLs, Description=${description.split('\n').length} features`);

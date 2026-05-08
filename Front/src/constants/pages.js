@@ -20,6 +20,8 @@ export const PAGE_CATEGORIES = {
   ebayParams: { id: 'ebayParams', name: 'eBay Parameters', icon: 'StoreIcon' },
   hrManagement: { id: 'hrManagement', name: 'HR & Management', icon: 'SupervisorAccountIcon' },
   others: { id: 'others', name: 'Others', icon: 'AppsIcon' },
+  storesSection: { id: 'storesSection', name: 'Stores', icon: 'StoreIcon' },
+  settingsSection: { id: 'settingsSection', name: 'Settings', icon: 'SettingsIcon' },
 };
 
 // Submenu definitions
@@ -99,8 +101,8 @@ export const PAGE_REGISTRY = [
   { id: 'AccountHealth', name: 'Account Health Report', path: '/account-health', category: 'compliance', defaultRoles: ['superadmin', 'fulfillmentadmin', 'hoc', 'compliancemanager'] },
   { id: 'BuyerMessages', name: 'Buyer Messages', path: '/message-received', category: 'compliance', defaultRoles: ['superadmin', 'fulfillmentadmin', 'hoc', 'compliancemanager'] },
   { id: 'ConversationManagement', name: 'Conversation Mgmt', path: '/conversation-management', category: 'compliance', defaultRoles: ['superadmin', 'fulfillmentadmin', 'hoc', 'compliancemanager'] },
-  { id: 'AmazonAccounts', name: 'Manage Amazon Accounts', path: '/amazon-accounts', category: 'compliance', defaultRoles: ['superadmin', 'fulfillmentadmin', 'hoc', 'compliancemanager'] },
-  { id: 'CreditCards', name: 'Manage Credit Cards', path: '/credit-cards', category: 'compliance', defaultRoles: ['superadmin', 'fulfillmentadmin', 'hoc', 'compliancemanager'] },
+  { id: 'AmazonAccounts', name: 'Supplier Accounts', path: '/amazon-accounts', category: 'settingsSection', defaultRoles: ['superadmin', 'fulfillmentadmin', 'hoc', 'compliancemanager'] },
+  { id: 'CreditCards', name: 'Manage Credit Cards', path: '/credit-cards', category: 'settingsSection', defaultRoles: ['superadmin', 'fulfillmentadmin', 'hoc', 'compliancemanager'] },
   { id: 'AffiliateOrders', name: 'Affiliate Orders', path: '/affiliate-orders', category: 'compliance', defaultRoles: ['superadmin', 'fulfillmentadmin', 'hoc', 'compliancemanager'] },
 
   // ====== EBAY PARAMETERS ======
@@ -143,6 +145,13 @@ export const PAGE_REGISTRY = [
   { id: 'UserCredentials', name: 'User Credentials', path: '/user-credentials', category: 'others', defaultRoles: ['superadmin'] },
   { id: 'UserPerformance', name: 'User Performance Logs', path: '/user-performance', category: 'others', defaultRoles: ['superadmin'] },
   { id: 'EmployeeDetails', name: 'Employee Details', path: '/employee-details', category: 'others', defaultRoles: ['superadmin', 'hradmin', 'operationhead'] },
+
+  // ====== STORES ======
+  { id: 'StoresPage', name: 'Stores', path: '/stores-page', category: 'storesSection', defaultRoles: ['superadmin', 'listingadmin'] },
+
+  // ====== SETTINGS ======
+  { id: 'SettingsPage', name: 'Settings', path: '/settings-page', category: 'settingsSection', defaultRoles: ['superadmin', 'listingadmin'] },
+  { id: 'DescriptionTemplates', name: 'Description Templates', path: '/description-templates', category: 'settingsSection', defaultRoles: ['superadmin', 'listingadmin'] },
 ];
 
 // Helper: get page by ID

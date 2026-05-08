@@ -724,6 +724,7 @@ export default function AsinListPage() {
 
       <AsinReviewModal
         open={reviewModal}
+        sellerId={activeSellerId}
         onClose={() => {
           if (window._directoryEventSource) {
             window._directoryEventSource.close();

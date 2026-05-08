@@ -106,6 +106,13 @@ export const PAGE_DEFAULT_ROLES = {
   'UserPerformance': ['superadmin'],
   'EmployeeDetails': ['superadmin', 'hradmin', 'operationhead'],
 
+  // Stores
+  'StoresPage': ['superadmin', 'listingadmin'],
+
+  // Settings
+  'SettingsPage': ['superadmin', 'listingadmin'],
+  'DescriptionTemplates': ['superadmin', 'listingadmin'],
+
   // Shared pages (accessible to all authenticated users)
   'AboutMe': ['_all_except_superadmin'],
   'MyLeaves': ['_all_except_superadmin'],

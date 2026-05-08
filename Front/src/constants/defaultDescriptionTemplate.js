@@ -12,15 +12,10 @@ export const DEFAULT_CORE_FIELD_DEFAULTS = {
 };
 
 export function mergeDefaultCoreFieldDefaults(coreFieldDefaults = {}) {
-  const merged = {
-    description: DEFAULT_DESCRIPTION_TEMPLATE,
+  return {
     ...DEFAULT_CORE_FIELD_DEFAULTS,
     ...(coreFieldDefaults || {})
   };
-  if (!String(merged.description || '').trim()) {
-    merged.description = DEFAULT_DESCRIPTION_TEMPLATE;
-  }
-  return merged;
 }
 
 export function createDefaultCoreFieldDefaults() {

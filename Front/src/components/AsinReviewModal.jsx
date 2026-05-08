@@ -18,13 +18,8 @@ import {
   CircularProgress,
   ToggleButtonGroup,
   ToggleButton,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
   Tooltip
 } from '@mui/material';
-import { DESCRIPTION_FOOTER_TEMPLATES, FOOTER_SENTINEL_START, FOOTER_SENTINEL_END } from '../constants/descriptionFooterTemplates';
 import {
   Close as CloseIcon,
   NavigateBefore as PrevIcon,
@@ -49,6 +44,84 @@ const MARKETPLACE_DOMAINS = {
   CA: 'www.amazon.ca',
   AU: 'www.amazon.com.au',
 };
+
+function formatBulletLi(text, isLast = false) {
+  const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return '';
+  const words = cleaned.split(' ');
+  const firstThree = words.slice(0, 3).join(' ');
+  const rest = words.slice(3).join(' ');
+  const borderCss = isLast ? '' : 'border-bottom:1px solid #e8d88a;';
+  return `<li style='padding:10px 14px;${borderCss}font-size:16px;color:#1a1a1a;'><span style='color:#b8960c;margin-right:8px;'>&#9658;</span><strong>${firstThree}</strong>${rest ? ` ${rest}` : ''}</li>`;
+}
+
+function normalizeAiFeatureBullets(aiDescription = '') {
+  const text = String(aiDescription || '').trim();
+  if (!text) return '';
+  const liMatches = text.match(/<li[\s\S]*?<\/li>/gi);
+  if (liMatches?.length) return liMatches.join('');
+  const lines = text
+    .split(/\r?\n|[•●▪‣]/g)
+    .map((s) => s.replace(/^[\-\*\d\.\)\s]+/, '').trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  return lines.map((line, idx) => formatBulletLi(line, idx === lines.length - 1)).join('');
+}
+
+function buildFallbackFeatureBullets(rawDescription = '') {
+  const source = String(rawDescription || '').trim();
+  if (!source) return '';
+  const lines = source
+    .split(/\r?\n|[•●▪‣]/g)
+    .map((s) => s.replace(/^[\-\*\d\.\)\s]+/, '').trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  return lines.map((line, idx) => formatBulletLi(line, idx === lines.length - 1)).join('');
+}
+
+function applyStoreTemplatePlaceholders(templateHtml = '', generatedListing = {}, sourceData = {}, aiDescriptionRaw = '') {
+  let composed = String(templateHtml || '');
+  if (!composed.trim()) return '';
+
+  const explicitAiDescription = String(aiDescriptionRaw || '').trim();
+  const generatedDescription = String(generatedListing?.description || '').trim();
+  const scrapedDescription = String(sourceData?.description || '').trim();
+  const safeGeneratedDescription =
+    generatedDescription && generatedDescription !== scrapedDescription
+      ? generatedDescription
+      : '';
+  // Priority: explicit aiDescription -> safe generated description.
+  // Temporary fallback: use scraped/source description when AI output is missing.
+  const aiDescription = explicitAiDescription || safeGeneratedDescription;
+  const resolvedBullets =
+    normalizeAiFeatureBullets(aiDescription) ||
+    buildFallbackFeatureBullets(scrapedDescription);
+
+  const titleClean = String(sourceData?.title || generatedListing?.title || '').trim();
+  const images = Array.isArray(sourceData?.images) ? sourceData.images.filter(Boolean) : [];
+
+  const placeholderMap = {
+    '{{AI_FEATURE_BULLETS}}': resolvedBullets,
+    '{{AI_DESCRIPTION}}': resolvedBullets || aiDescription,
+    '{{TITLE_CLEAN}}': titleClean,
+    '{{MAIN_IMAGE}}': images[0] || '',
+    '{{SUB1}}': images[1] || '',
+    '{{SUB2}}': images[2] || '',
+    '{{SUB3}}': images[3] || '',
+    '{{SUB4}}': images[4] || '',
+    '{{SUB5}}': images[5] || '',
+    '{{SUB6}}': images[6] || '',
+    '{{SUB7}}': images[7] || '',
+  };
+
+  Object.entries(placeholderMap).forEach(([token, value]) => {
+    if (composed.includes(token)) {
+      composed = composed.split(token).join(value || '');
+    }
+  });
+
+  return composed;
+}
 
 /**
  * Calculates "Actual Profit" (INR) for a US marketplace listing.
@@ -77,8 +150,12 @@ export default function AsinReviewModal({
   onSave,
   onListDirectly = null,
   templateColumns = [],
-  marketplace = 'US'
+  marketplace = 'US',
+  sellerId = '',
+  storeTemplateHtml = ''
 }) {
+  const DESCRIPTION_TEMPLATE_STORAGE_KEY = 'description-templates.gallery.v1';
+  const STORE_TEMPLATE_MAP_KEY = 'store-description-template-map.v1';
   const amazonDomain = MARKETPLACE_DOMAINS[marketplace] || MARKETPLACE_DOMAINS.US;
   const [currentIndex, setCurrentIndex] = useState(0);
   const [editedItems, setEditedItems] = useState({});
@@ -88,7 +165,6 @@ export default function AsinReviewModal({
   const [descriptionViewMode, setDescriptionViewMode] = useState('preview'); // 'code' | 'preview'
   const [amazonWindowRef, setAmazonWindowRef] = useState(null);
   const [showAmazonPreview, setShowAmazonPreview] = useState(false);
-  const [appliedDescTemplates, setAppliedDescTemplates] = useState({}); // { [itemId]: templateKey | '' }
   const [rephrasing, setRephrasing] = useState({}); // { [itemId]: true|false }
   const [startPriceEditMode, setStartPriceEditMode] = useState({}); // { [itemId]: true|false }
 
@@ -109,16 +185,60 @@ export default function AsinReviewModal({
   // Initialize edited items from preview data
   useEffect(() => {
     if (previewItems.length > 0) {
+      let selectedStoreTemplate = null;
+      try {
+        if (String(storeTemplateHtml || '').trim()) {
+          selectedStoreTemplate = { html: String(storeTemplateHtml) };
+        } else {
+          const rawMap = localStorage.getItem(STORE_TEMPLATE_MAP_KEY);
+          const parsedMap = rawMap ? JSON.parse(rawMap) : {};
+          let assignedTemplateId = '';
+          if (sellerId) {
+            assignedTemplateId = parsedMap?.[sellerId] || '';
+            if (!assignedTemplateId && parsedMap && typeof parsedMap === 'object') {
+              const matchedKey = Object.keys(parsedMap).find((key) => String(key) === String(sellerId));
+              assignedTemplateId = matchedKey ? parsedMap[matchedKey] : '';
+            }
+          }
+
+          if (assignedTemplateId) {
+            const rawTemplates = localStorage.getItem(DESCRIPTION_TEMPLATE_STORAGE_KEY);
+            const parsedTemplates = rawTemplates ? JSON.parse(rawTemplates) : [];
+            selectedStoreTemplate = (Array.isArray(parsedTemplates) ? parsedTemplates : [])
+              .find((template) => String(template?.id) === String(assignedTemplateId));
+          }
+        }
+      } catch {
+        selectedStoreTemplate = null;
+      }
+
+      const directTemplateHtml = String(storeTemplateHtml || '').trim();
+      const resolvedTemplateHtml = directTemplateHtml || String(selectedStoreTemplate?.html || '').trim();
+
       const initial = {};
       previewItems.forEach(item => {
         if (item.generatedListing) {
-          initial[item.id] = { ...item.generatedListing };
+          const nextListing = { ...item.generatedListing };
+          const isExistingListingEdit = Boolean(nextListing?._existingListingId);
+          if (!isExistingListingEdit && resolvedTemplateHtml) {
+            nextListing.description = applyStoreTemplatePlaceholders(
+              resolvedTemplateHtml,
+              item.generatedListing,
+              item.sourceData,
+              item.aiDescription
+            );
+          } else if (!isExistingListingEdit) {
+            // If no store template is assigned, keep description empty.
+            nextListing.description = '';
+          }
+          initial[item.id] = nextListing;
         }
       });
       setEditedItems(initial);
       setStartPriceEditMode({});
     }
-  }, [previewItems]);
+  }, [previewItems, sellerId, storeTemplateHtml]);
+
 
   // Reset transient review state for each new preview run/open
   useEffect(() => {
@@ -237,28 +357,6 @@ export default function AsinReviewModal({
     }));
   };
 
-  const applyDescTemplate = (itemId, templateKey) => {
-    const currentDesc = (editedItems[itemId] || currentItem?.generatedListing || {}).description || '';
-    // Strip any existing footer using sentinel comments
-    const baseDesc = currentDesc.includes(FOOTER_SENTINEL_START)
-      ? currentDesc.slice(0, currentDesc.indexOf(FOOTER_SENTINEL_START)).trimEnd()
-      : currentDesc;
-
-    let newDesc;
-    if (!templateKey) {
-      newDesc = baseDesc;
-    } else {
-      const template = DESCRIPTION_FOOTER_TEMPLATES.find(t => t.key === templateKey);
-      newDesc = baseDesc + '\n' + FOOTER_SENTINEL_START + '\n' + template.html + '\n' + FOOTER_SENTINEL_END;
-    }
-
-    setEditedItems(prev => ({
-      ...prev,
-      [itemId]: { ...(prev[itemId] || currentItem?.generatedListing || {}), description: newDesc }
-    }));
-    setAppliedDescTemplates(prev => ({ ...prev, [itemId]: templateKey }));
-    setHasUnsavedChanges(true);
-  };
 
   const handleSaveAll = async () => {
     setSaving(true);
@@ -951,29 +1049,7 @@ export default function AsinReviewModal({
                           </ToggleButtonGroup>
                         </Box>
 
-                        {/* Footer Template Dropdown */}
-                        <Stack
-                          direction="row"
-                          alignItems="flex-start"
-                          justifyContent="space-between"
-                          spacing={1.5}
-                          sx={{ mb: 1.5, flexWrap: 'wrap' }}
-                          useFlexGap
-                        >
-                          <FormControl size="small" sx={{ width: 280 }}>
-                            <InputLabel>Append Footer Template</InputLabel>
-                            <Select
-                              value={appliedDescTemplates[currentItem?.id] || ''}
-                              label="Append Footer Template"
-                              onChange={(e) => applyDescTemplate(currentItem.id, e.target.value)}
-                            >
-                              <MenuItem value=""><em>— No Footer —</em></MenuItem>
-                              {DESCRIPTION_FOOTER_TEMPLATES.map(t => (
-                                <MenuItem key={t.key} value={t.key}>{t.label}</MenuItem>
-                              ))}
-                            </Select>
-                          </FormControl>
-
+                        <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1.5 }}>
                           {showActualProfit && (
                             <Tooltip
                               title={actualProfitTooltipContent}

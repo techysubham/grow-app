@@ -25,9 +25,10 @@ export default function CoreFieldDefaultsDialog({ open, onClose, templateId, cur
   const handleSave = async () => {
     setSaving(true);
     setError('');
-    console.log('💾 Saving core field defaults:', formData);
+    const { description, ...payload } = formData || {};
+    console.log('💾 Saving core field defaults:', payload);
     try {
-      await onSave(formData);
+      await onSave(payload);
       onClose();
     } catch (err) {
       setError(err.message || 'Failed to save defaults');

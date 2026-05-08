@@ -65,8 +65,7 @@ export const CORE_FIELD_SECTIONS = [
     title: 'Media & Description',
     fields: [
       { key: 'itemPhotoUrl', label: 'Item Photo URL', type: 'text', placeholder: 'Image URL' },
-      { key: 'videoId', label: 'Video ID', type: 'text', placeholder: 'YouTube video ID' },
-      { key: 'description', label: 'Description', type: 'textarea', placeholder: 'Product description' }
+      { key: 'videoId', label: 'Video ID', type: 'text', placeholder: 'YouTube video ID' }
     ]
   },
   {
@@ -158,27 +157,6 @@ export default function CoreFieldDefaultsForm({ formData = {}, onChange }) {
                       </MenuItem>
                     ))}
                   </TextField>
-                );
-              }
-
-              if (field.type === 'textarea') {
-                return (
-                  <TextField
-                    key={field.key}
-                    label={field.label}
-                    value={fieldValue}
-                    onChange={(e) => handleChange(field.key, e.target.value)}
-                    fullWidth
-                    multiline
-                    rows={3}
-                    size="small"
-                    placeholder={field.placeholder}
-                    helperText={
-                      field.key === 'description'
-                        ? 'Tip: Build a default HTML template here and place {{AI_FEATURE_BULLETS}} where ASIN Auto-Fill AI bullets should be inserted.'
-                        : ''
-                    }
-                  />
                 );
               }
 

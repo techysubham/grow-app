@@ -4,56 +4,34 @@ import TemplateListing from '../models/TemplateListing.js';
 import ListingTemplate from '../models/ListingTemplate.js';
 import Seller from '../models/Seller.js';
 import SellerPricingConfig from '../models/SellerPricingConfig.js';
-import { fetchAmazonData, applyFieldConfigs } from '../utils/asinAutofill.js';
+import { fetchAmazonData, applyFieldConfigs, applyOverlayToScrapedImages } from '../utils/asinAutofill.js';
 import { generateSKUFromASIN, generateSKUWithCount } from '../utils/skuGenerator.js';
 import { getEffectiveTemplate } from '../utils/templateMerger.js';
-import { processImagePlaceholders } from '../utils/imageReplacer.js';
 import { getUsageStats, getFieldExtractionStats, getRecentErrors, checkQuotaStatus } from '../utils/apiUsageTracker.js';
 import { getAsinCacheStats, clearAsinCache, invalidateAsinCache } from '../utils/asinCache.js';
 import AsinDirectory from '../models/AsinDirectory.js';
 
 const router = express.Router();
 
-function formatBulletLi(text, isLast = false) {
-  const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!cleaned) return '';
-  const words = cleaned.split(' ');
-  const firstThree = words.slice(0, 3).join(' ');
-  const rest = words.slice(3).join(' ');
-  const borderCss = isLast ? '' : 'border-bottom:1px solid #e8d88a;';
-  return `<li style='padding:10px 14px;${borderCss}font-size:16px;color:#1a1a1a;'><span style='color:#b8960c;margin-right:8px;'>&#9658;</span><strong>${firstThree}</strong>${rest ? ` ${rest}` : ''}</li>`;
-}
-
-function buildFallbackFeatureBullets(rawDescription = '') {
-  const source = String(rawDescription || '').trim();
-  if (!source) return '';
-  const lines = source
-    .split(/\r?\n|[•●▪‣]/g)
-    .map(s => s.replace(/^[\-\*\d\.\)\s]+/, '').trim())
-    .filter(Boolean)
-    .slice(0, 6);
-  if (lines.length === 0) return '';
-  return lines.map((line, idx) => formatBulletLi(line, idx === lines.length - 1)).join('');
-}
-
-function normalizeAiFeatureBullets(aiDescription = '') {
-  const text = String(aiDescription || '').trim();
-  if (!text) return '';
-  // If AI returned full HTML with <li> tags, keep only those.
-  const liMatches = text.match(/<li[\s\S]*?<\/li>/gi);
-  if (liMatches?.length) return liMatches.join('');
-  // If plain text came back, convert line-by-line to expected list items.
-  const lines = text
-    .split(/\r?\n|[•●▪‣]/g)
-    .map(s => s.replace(/^[\-\*\d\.\)\s]+/, '').trim())
-    .filter(Boolean)
-    .slice(0, 6);
-  return lines.map((line, idx) => formatBulletLi(line, idx === lines.length - 1)).join('');
-}
-
 function parseAmazonPriceToNumber(priceValue) {
   const numeric = parseFloat(String(priceValue || '').replace(/[^0-9.]/g, ''));
   return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function getConfiguredAiDescription(fieldConfigs = [], coreFields = {}, customFields = {}) {
+  const descriptionConfig = (Array.isArray(fieldConfigs) ? fieldConfigs : []).find((cfg) => {
+    const ebayField = String(cfg?.ebayField || '').trim().toLowerCase();
+    const source = String(cfg?.source || '').trim().toLowerCase();
+    return cfg?.enabled && ebayField === 'description' && source === 'ai';
+  });
+
+  if (!descriptionConfig) return '';
+
+  const fieldKey = String(descriptionConfig.ebayField || 'description');
+  const fieldType = String(descriptionConfig.fieldType || 'core').trim().toLowerCase();
+  const sourceObj = fieldType === 'custom' ? customFields : coreFields;
+  const candidate = sourceObj?.[fieldKey];
+  return typeof candidate === 'string' ? candidate.trim() : '';
 }
 
 function mergeTemplateCoreFields(coreFieldDefaults = {}, autoCoreFields = {}, amazonData = {}) {
@@ -72,59 +50,10 @@ function mergeTemplateCoreFields(coreFieldDefaults = {}, autoCoreFields = {}, am
     merged.itemPhotoUrl = amazonData.images[0];
   }
 
-  if (!String(merged.description || '').trim() && String(amazonData?.description || '').trim()) {
-    merged.description = String(amazonData.description).trim();
-  }
-
   if (merged.startPrice === undefined || merged.startPrice === null || merged.startPrice === '') {
     const parsedAmazonPrice = parseAmazonPriceToNumber(amazonData?.price);
     // Keep the listing valid even when Amazon price is unavailable.
     merged.startPrice = parsedAmazonPrice ? parsedAmazonPrice.toFixed(2) : '0.01';
-  }
-
-  const templateDescription = coreFieldDefaults?.description;
-  if (typeof templateDescription !== 'string' || !templateDescription) {
-    return merged;
-  }
-
-  const aiDescription = typeof autoCoreFields?.description === 'string'
-    ? autoCoreFields.description
-    : '';
-  const normalizedAiBullets = normalizeAiFeatureBullets(aiDescription);
-  const fallbackBullets = buildFallbackFeatureBullets(amazonData?.description || '');
-  const resolvedBullets = normalizedAiBullets || fallbackBullets;
-  // Use source Amazon title in description placeholders when available,
-  // so description content is not limited by eBay title-length constraints.
-  const titleClean = typeof amazonData?.title === 'string' && amazonData.title.trim()
-    ? amazonData.title.trim()
-    : (typeof merged?.title === 'string' ? merged.title : '');
-  const imageUrls = Array.isArray(amazonData?.images) ? amazonData.images : [];
-
-  let composedDescription = templateDescription;
-  const placeholderMap = {
-    '{{AI_FEATURE_BULLETS}}': resolvedBullets,
-    '{{AI_DESCRIPTION}}': resolvedBullets || aiDescription,
-    '{{TITLE_CLEAN}}': titleClean,
-    '{{MAIN_IMAGE}}': '{image_main}',
-    '{{SUB1}}': '{image_sub1}',
-    '{{SUB2}}': '{image_sub2}',
-    '{{SUB3}}': '{image_sub3}',
-    '{{SUB4}}': '{image_sub4}',
-    '{{SUB5}}': '{image_sub5}',
-    '{{SUB6}}': '{image_sub6}',
-    '{{SUB7}}': '{image_sub7}',
-  };
-  let usedPlaceholder = false;
-  for (const [token, replacement] of Object.entries(placeholderMap)) {
-    if (composedDescription.includes(token)) {
-      composedDescription = composedDescription.split(token).join(replacement || '');
-      usedPlaceholder = true;
-    }
-  }
-
-  if (usedPlaceholder) {
-    composedDescription = processImagePlaceholders(composedDescription, imageUrls);
-    merged.description = composedDescription;
   }
 
   return merged;
@@ -598,7 +527,6 @@ router.get('/bulk-preview-stream', requireAuthSSE, async (req, res) => {
     const fieldConfigs = Array.isArray(template?.asinAutomation?.fieldConfigs)
       ? template.asinAutomation.fieldConfigs
       : [];
-    
     // Get pricing config
     let pricingConfig = template.pricingConfig;
     const sellerConfig = await SellerPricingConfig.findOne({ sellerId, templateId });
@@ -764,10 +692,13 @@ router.get('/bulk-preview-stream', requireAuthSSE, async (req, res) => {
         const countDoc = await AsinDirectory.findOne({ asin }).select('listingCount').lean();
         const finalSKU = generateSKUWithCount(asin, countDoc?.listingCount || 0);
 
+        const safeAiDescription = getConfiguredAiDescription(fieldConfigs, coreFields, customFields);
+
         const item = {
           id: `preview-${asin}`,
           asin,
           sku: finalSKU,
+          aiDescription: safeAiDescription,
           sourceData: {
             title: amazonData.title,
             brand: amazonData.brand,
@@ -878,7 +809,6 @@ router.get('/bulk-preview-from-directory-stream', requireAuthSSE, async (req, re
     const fieldConfigs = Array.isArray(template?.asinAutomation?.fieldConfigs)
       ? template.asinAutomation.fieldConfigs
       : [];
-
     // Get pricing config (seller override takes priority)
     let pricingConfig = template.pricingConfig;
     const sellerConfig = await SellerPricingConfig.findOne({ sellerId, templateId });
@@ -986,13 +916,16 @@ router.get('/bulk-preview-from-directory-stream', requireAuthSSE, async (req, re
         // Build amazonData from stored document (no scraping).
         // Shape must match fetchAmazonData() output so applyFieldConfigs works identically,
         // including the `asin` property used in AI prompt placeholders ({{asin}}).
+        const directoryImages = doc?.images || [];
+        const processedDirectoryImages = await applyOverlayToScrapedImages(directoryImages);
+
         const amazonData = doc ? {
           asin,
           title: doc.title || '',
           brand: doc.brand || '',
           price: doc.price || '',
           description: doc.description || '',
-          images: doc.images || [],
+          images: processedDirectoryImages,
           color: doc.color || '',
           compatibility: doc.compatibility || '',
           model: doc.model || '',
@@ -1040,10 +973,13 @@ router.get('/bulk-preview-from-directory-stream', requireAuthSSE, async (req, re
         // Compute count-based SKU using the already-fetched directory doc
         const finalSKU = generateSKUWithCount(asin, doc?.listingCount || 0);
 
+        const safeAiDescription = getConfiguredAiDescription(fieldConfigs, coreFields, customFields);
+
         const item = {
           id: `preview-${asin}`,
           asin,
           sku: finalSKU,
+          aiDescription: safeAiDescription,
           sourceData: {
             title: amazonData.title,
             brand: amazonData.brand,
@@ -3472,6 +3408,90 @@ router.post('/bulk-import', requireAuth, async (req, res) => {
     }
     console.error('Error bulk importing listings:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Reprocess saved listing images with overlay watermark
+router.post('/reprocess-overlay-images', requireAuth, async (req, res) => {
+  try {
+    const {
+      templateId,
+      sellerId,
+      limit = 100,
+      status = 'active',
+      dryRun = false
+    } = req.body || {};
+
+    if (!templateId) {
+      return res.status(400).json({ error: 'templateId is required' });
+    }
+
+    const query = {
+      templateId,
+      itemPhotoUrl: { $exists: true, $ne: '' }
+    };
+    if (sellerId) query.sellerId = sellerId;
+    if (status && status !== 'all') query.status = status;
+
+    const max = Math.max(1, Math.min(Number(limit) || 100, 500));
+    const listings = await TemplateListing.find(query)
+      .select('_id customLabel itemPhotoUrl sellerId')
+      .limit(max)
+      .lean();
+
+    let scanned = 0;
+    let updated = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (const listing of listings) {
+      scanned += 1;
+      try {
+        const urls = String(listing.itemPhotoUrl || '')
+          .split('|')
+          .map((u) => u.trim())
+          .filter(Boolean);
+
+        if (urls.length === 0) {
+          skipped += 1;
+          continue;
+        }
+
+        const processedUrls = await applyOverlayToScrapedImages(urls);
+        const nextValue = processedUrls.join(' | ');
+
+        if (!nextValue || nextValue === String(listing.itemPhotoUrl || '').trim()) {
+          skipped += 1;
+          continue;
+        }
+
+        if (!dryRun) {
+          await TemplateListing.updateOne(
+            { _id: listing._id },
+            { $set: { itemPhotoUrl: nextValue } }
+          );
+        }
+        updated += 1;
+      } catch (err) {
+        errors.push({
+          listingId: String(listing._id),
+          sku: listing.customLabel || '',
+          error: err?.message || 'Failed to reprocess listing images'
+        });
+      }
+    }
+
+    res.json({
+      ok: true,
+      dryRun: Boolean(dryRun),
+      scanned,
+      updated,
+      skipped,
+      errors
+    });
+  } catch (error) {
+    console.error('Error reprocessing overlay images:', error);
+    res.status(500).json({ error: error.message || 'Failed to reprocess overlay images' });
   }
 });
 

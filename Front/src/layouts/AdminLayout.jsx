@@ -162,6 +162,10 @@ import SecurityIcon from '@mui/icons-material/Security';
 import PageAccessManagementPage from '../pages/admin/PageAccessManagementPage.jsx';
 import PageAccessAuditLogPage from '../pages/admin/PageAccessAuditLogPage.jsx';
 import UserPasswordManagementPage from '../pages/admin/UserPasswordManagementPage.jsx';
+import StoresPage from '../pages/admin/StoresPage.jsx';
+import SettingsPage from '../pages/admin/SettingsPage.jsx';
+import DescriptionTemplatesPage from '../pages/admin/DescriptionTemplatesPage.jsx';
+import SettingsIcon from '@mui/icons-material/Settings';
 
 import usePageAccess from '../hooks/usePageAccess';
 import { PAGE_REGISTRY, PAGE_CATEGORIES, SUBMENUS } from '../constants/pages';
@@ -205,6 +209,8 @@ const categoryIcons = {
   ebayParams: StoreIcon,
   hrManagement: SupervisorAccountIcon,
   others: AppsIcon,
+  storesSection: StoreIcon,
+  settingsSection: SettingsIcon,
 };
 
 // Flyout menu styles (shared across all categories)
@@ -330,6 +336,9 @@ const COMPONENT_MAP = {
   'UserCredentials': UserCredentialsPage,
   'UserPerformance': UserPerformancePage,
   'EmployeeDetails': EmployeeDetailsPage,
+  'StoresPage': StoresPage,
+  'SettingsPage': SettingsPage,
+  'DescriptionTemplates': DescriptionTemplatesPage,
 };
 
 export default function AdminLayout({ user, onLogout }) {
@@ -646,6 +655,8 @@ export default function AdminLayout({ user, onLogout }) {
         {renderCategoryMenu('ebayParams')}
         {renderCategoryMenu('hrManagement')}
         {renderCategoryMenu('others')}
+        {renderCategoryMenu('storesSection')}
+        {renderCategoryMenu('settingsSection')}
 
         {/* Ideas & Issues - standalone for users who don't see it in HR category */}
         {!hasAccess('IdeasAndIssues') && (

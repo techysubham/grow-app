@@ -126,7 +126,9 @@ export default function EmployeeDetailsPage() {
     setLoading(true);
     try {
       const list = await listEmployeeProfiles();
-      setRows(list);
+      // Seller accounts are managed on the dedicated Stores page.
+      // Keep Employee Details focused on non-seller staff only.
+      setRows((list || []).filter((profile) => profile?.user?.role !== 'seller'));
     } catch (e) {
       console.error('Failed to load employees', e);
     } finally {

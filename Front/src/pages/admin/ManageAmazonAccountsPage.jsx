@@ -120,13 +120,13 @@ export default function ManageAmazonAccountsPage() {
 
   return (
     <Box>
-      <Typography variant="h6" sx={{ mb: 2 }}>Manage Amazon Accounts</Typography>
+      <Typography variant="h6" sx={{ mb: 2 }}>Supplier Accounts</Typography>
       
       <Paper sx={{ p: 2, mb: 3 }}>
         {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
         <Stack direction="row" spacing={2} component="form" onSubmit={addAccount}>
           <TextField 
-            label="Amazon Account Name" 
+            label="Supplier Account Name" 
             value={name} 
             onChange={(e) => setName(e.target.value)} 
             required 

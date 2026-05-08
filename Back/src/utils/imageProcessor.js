@@ -7,6 +7,21 @@ import { uploadToImgBB } from './imgbbUploader.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const OVERLAY_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp'];
+
+async function resolveOverlayBadgePath(overlayBadgeName = 'usa-seller') {
+  const baseDir = path.join(__dirname, '../../public/uploads/overlay-badges');
+  for (const ext of OVERLAY_EXTENSIONS) {
+    const candidate = path.join(baseDir, `${overlayBadgeName}${ext}`);
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // Continue searching other extensions
+    }
+  }
+  return null;
+}
 
 /**
  * Downloads an image from a URL and returns a buffer
@@ -36,18 +51,14 @@ async function createEbayImageWithOverlay(productImageUrl, overlayBadgeName = 'u
     // Download the product image
     const productImageBuffer = await downloadImage(productImageUrl);
 
-    // Define overlay badge path
-    const overlayBadgePath = path.join(
-      __dirname,
-      '../../public/uploads/overlay-badges',
-      `${overlayBadgeName}.png`
-    );
+    // Resolve overlay badge path (supports png/jpg/jpeg/webp)
+    const overlayBadgePath = await resolveOverlayBadgePath(overlayBadgeName);
 
-    // Check if overlay badge exists
-    try {
-      await fs.access(overlayBadgePath);
-    } catch (error) {
-      console.warn(`Overlay badge not found: ${overlayBadgePath}. Using product image without overlay.`);
+    if (!overlayBadgePath) {
+      console.warn(
+        `Overlay badge not found for "${overlayBadgeName}" in ${path.join(__dirname, '../../public/uploads/overlay-badges')} ` +
+        `(${OVERLAY_EXTENSIONS.join(', ')}). Using product image without overlay.`
+      );
       // Process and upload original image without overlay
       const outputFilename = `ebay-${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`;
       const outputPath = path.join(__dirname, '../../public/uploads/ebay-images', outputFilename);
@@ -72,9 +83,7 @@ async function createEbayImageWithOverlay(productImageUrl, overlayBadgeName = 'u
       return publicUrl;
     }
 
-    // Get product image metadata
     const productImage = sharp(productImageBuffer);
-    const metadata = await productImage.metadata();
 
     // Resize product image to standard size (800x800 max, maintaining aspect ratio)
     const resizedProductImage = await productImage
@@ -90,11 +99,6 @@ async function createEbayImageWithOverlay(productImageUrl, overlayBadgeName = 'u
     const overlayBuffer = await sharp(overlayBadgePath)
       .resize(productWidth, productHeight, { fit: 'cover', position: 'center' })
       .toBuffer();
-
-    // Get overlay dimensions after resize
-    const overlayMetadata = await sharp(overlayBuffer).metadata();
-    const overlayWidth = overlayMetadata.width;
-    const overlayHeight = overlayMetadata.height;
 
     // Composite the overlay onto the product image (full coverage, top-left at 0,0)
     const outputFilename = `ebay-${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`;
