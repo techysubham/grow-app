@@ -9524,6 +9524,8 @@ router.get('/all-listings', requireAuth, async (req, res) => {
 });
 
 // GET ALL ACTIVE LISTINGS ACROSS ALL STORES/SELLERS
+// Merge ActiveListing + Listing: sync jobs may write to only one collection per store.
+// Old logic picked ActiveListing whenever it had any row, hiding Listing-only stores.
 router.get('/all-store-listings', requireAuth, async (req, res) => {
   const { page = 1, limit = 50, search, sellerId, sortBy = 'startDate', sortOrder = 'desc' } = req.query;
   try {
@@ -9572,41 +9574,57 @@ router.get('/all-store-listings', requireAuth, async (req, res) => {
       ];
     }
 
-    let sourceCollection = 'ActiveListing';
-    let Model = ActiveListing;
-    let totalDocs = await ActiveListing.countDocuments(query);
-    let listings = [];
+    const listingColl = Listing.collection.name;
 
-    if (totalDocs > 0) {
-      listings = await ActiveListing.find(query)
-        .sort(sortSpec)
-        .skip(skip)
-        .limit(limitNum)
-        .lean();
-    } else {
-      // Fallback: many existing sync jobs populate `Listing` (Motors pipeline).
-      // Use it when ActiveListing has no rows so Store Listings can show data immediately.
-      sourceCollection = 'Listing';
-      Model = Listing;
-      totalDocs = await Listing.countDocuments(query);
-      listings = await Listing.find(query)
-        .sort(sortSpec)
-        .skip(skip)
-        .limit(limitNum)
-        .lean();
-    }
-
-    const summaryAgg = await Model.aggregate([
+    const mergeStages = [
       { $match: query },
       {
+        $unionWith: {
+          coll: listingColl,
+          pipeline: [{ $match: query }],
+        },
+      },
+      {
         $group: {
-          _id: null,
-          totalAmount: { $sum: { $ifNull: ['$currentPrice', 0] } },
-          totalQuantity: { $sum: { $ifNull: ['$quantity', 0] } },
+          _id: '$itemId',
+          docs: { $push: '$$ROOT' },
+        },
+      },
+      {
+        $replaceRoot: {
+          newRoot: {
+            $reduce: {
+              input: { $reverseArray: '$docs' },
+              initialValue: {},
+              in: { $mergeObjects: ['$$value', '$$this'] },
+            },
+          },
+        },
+      },
+    ];
+
+    const [facetRow] = await ActiveListing.aggregate([
+      ...mergeStages,
+      {
+        $facet: {
+          summary: [
+            {
+              $group: {
+                _id: null,
+                totalAmount: { $sum: { $ifNull: ['$currentPrice', 0] } },
+                totalQuantity: { $sum: { $ifNull: ['$quantity', 0] } },
+              },
+            },
+          ],
+          data: [{ $sort: sortSpec }, { $skip: skip }, { $limit: limitNum }],
+          meta: [{ $count: 'total' }],
         },
       },
     ]);
-    const summary = summaryAgg[0] || { totalAmount: 0, totalQuantity: 0 };
+
+    const totalDocs = facetRow?.meta[0]?.total || 0;
+    const listings = facetRow?.data || [];
+    const summary = facetRow?.summary[0] || { totalAmount: 0, totalQuantity: 0 };
 
     const enriched = listings.map((listing) => ({
       ...listing,
@@ -9615,7 +9633,7 @@ router.get('/all-store-listings', requireAuth, async (req, res) => {
 
     res.json({
       listings: enriched,
-      sourceCollection,
+      sourceCollection: 'ActiveListing+Listing',
       sorting: {
         sortBy: resolvedSortField,
         sortOrder: resolvedSortOrder === 1 ? 'asc' : 'desc',
@@ -9627,7 +9645,7 @@ router.get('/all-store-listings', requireAuth, async (req, res) => {
       pagination: {
         total: totalDocs,
         page: pageNum,
-        pages: Math.ceil(totalDocs / limitNum),
+        pages: Math.ceil(totalDocs / limitNum) || 0,
       },
     });
   } catch (err) {
