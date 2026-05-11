@@ -35,10 +35,16 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import SaveIcon from '@mui/icons-material/Save';
 import CancelIcon from '@mui/icons-material/Close';
 import api from '../../lib/api';
+import {
+    formatPaymentDateDisplayPt,
+    formatYyyyMmDdPt,
+    getTodayPtDateString,
+    ptYyyyMmDdToIsoString,
+} from '../../lib/pacificDate.js';
 
 const EMPTY_PAYONEER_FORM = () => ({
     bankAccount: '',
-    paymentDate: new Date().toISOString().split('T')[0],
+    paymentDate: getTodayPtDateString(),
     amount: '',
     exchangeRate: '',
     store: '',
@@ -51,20 +57,9 @@ const EMPTY_PAYONEER_FORM = () => ({
 /** Max DB rows to merge with eBay feed (client-side sort + pagination). */
 const MERGE_FETCH_LIMIT = 5000;
 
-/** Local calendar YYYY-MM-DD — aligns table dates with eBay payout dates (avoids UTC slice mismatches). */
-function paymentDayKey(value) {
-    if (value == null || value === '') return '';
-    const x = new Date(value);
-    if (Number.isNaN(x.getTime())) return '';
-    const y = x.getFullYear();
-    const m = String(x.getMonth() + 1).padStart(2, '0');
-    const d = String(x.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-}
-
 function dbRowDedupeKey(r) {
     const sid = String(r.store?._id || '');
-    const d = paymentDayKey(r.paymentDate);
+    const d = formatYyyyMmDdPt(r.paymentDate);
     const amt = Number(r.amount);
     if (!sid || !d || Number.isNaN(amt)) return null;
     return `${sid}|${d}|${amt.toFixed(2)}`;
@@ -72,7 +67,7 @@ function dbRowDedupeKey(r) {
 
 function feedRowDedupeKey(f) {
     const sid = String(f.sellerId);
-    const d = paymentDayKey(f.payoutDate);
+    const d = formatYyyyMmDdPt(f.payoutDate);
     const amt = Number(f.amount);
     if (!sid || !d || Number.isNaN(amt)) return null;
     return `${sid}|${d}|${amt.toFixed(2)}`;
@@ -90,7 +85,7 @@ function resolvePayoutIdFromFeed(record, payoutFeedRows) {
     if (record.ebayPayoutId) return record.ebayPayoutId;
 
     const sid = String(record.store?._id || '');
-    const day = paymentDayKey(record.paymentDate);
+    const day = formatYyyyMmDdPt(record.paymentDate);
     const amt = Number(record.amount);
     if (!sid || !day || Number.isNaN(amt)) return null;
 
@@ -102,13 +97,13 @@ function resolvePayoutIdFromFeed(record, payoutFeedRows) {
 
     const tol = payoutFeedRows.filter((f) => {
         if (String(f.sellerId) !== sid) return false;
-        if (paymentDayKey(f.payoutDate) !== day) return false;
+        if (formatYyyyMmDdPt(f.payoutDate) !== day) return false;
         return Math.abs(Number(f.amount) - amt) < 0.02;
     });
     if (tol.length === 1) return String(tol[0].payoutId);
 
     const sameDay = payoutFeedRows.filter(
-        (f) => String(f.sellerId) === sid && paymentDayKey(f.payoutDate) === day
+        (f) => String(f.sellerId) === sid && formatYyyyMmDdPt(f.payoutDate) === day
     );
     if (sameDay.length === 1) return String(sameDay[0].payoutId);
     if (sameDay.length > 1) {
@@ -246,7 +241,7 @@ function MobilePayoneerCard({ record, isEditing, displayPayoutId, renderCell, on
                             </Stack>
                         ) : (
                             <Typography variant="body2" sx={{ mt: 0.5 }}>
-                                {record.periodStart ? new Date(record.periodStart).toLocaleDateString() : '-'} → {record.periodEnd ? new Date(record.periodEnd).toLocaleDateString() : '-'}
+                                {record.periodStart ? formatPaymentDateDisplayPt(record.periodStart) : '-'} → {record.periodEnd ? formatPaymentDateDisplayPt(record.periodEnd) : '-'}
                             </Typography>
                         )}
                     </Box>
@@ -352,7 +347,7 @@ const PayoneerSheetPage = () => {
         }
         if (filters.dateMode === 'single' && filters.singleDate) {
             const d = filters.singleDate;
-            rows = rows.filter((r) => r.payoutDate && paymentDayKey(r.payoutDate) === d);
+            rows = rows.filter((r) => r.payoutDate && formatYyyyMmDdPt(r.payoutDate) === d);
         } else if (filters.dateMode === 'range' && (filters.dateRange.start || filters.dateRange.end)) {
             const start = filters.dateRange.start ? new Date(filters.dateRange.start) : null;
             const end = filters.dateRange.end ? new Date(filters.dateRange.end) : null;
@@ -560,7 +555,7 @@ const PayoneerSheetPage = () => {
             const pick = pickCompleted || pickInitiated;
 
             if (pick) {
-                const payDate = pick.payoutDate ? new Date(pick.payoutDate).toISOString().split('T')[0] : '';
+                const payDate = pick.payoutDate ? formatYyyyMmDdPt(new Date(pick.payoutDate)) : '';
                 const amt = pick.amount?.value != null ? String(parseFloat(pick.amount.value)) : '';
                 const pid = pick.payoutId != null && pick.payoutId !== '' ? String(pick.payoutId) : '';
                 setFormData((prev) => ({
@@ -630,7 +625,7 @@ const PayoneerSheetPage = () => {
         setFormData({
             ...EMPTY_PAYONEER_FORM(),
             bankAccount: bid,
-            paymentDate: new Date().toISOString().split('T')[0]
+            paymentDate: getTodayPtDateString()
         });
         setOpenDialog(true);
     }, [searchParams, filters.bankAccount]);
@@ -641,7 +636,7 @@ const PayoneerSheetPage = () => {
             ...EMPTY_PAYONEER_FORM(),
             bankAccount: row.suggestedBankAccountId ? String(row.suggestedBankAccountId) : '',
             store: String(row.sellerId),
-            paymentDate: row.payoutDate ? new Date(row.payoutDate).toISOString().split('T')[0] : '',
+            paymentDate: row.payoutDate ? formatYyyyMmDdPt(new Date(row.payoutDate)) : '',
             amount: Number.isFinite(row.amount) ? String(row.amount) : '',
             ebayPayoutId: row.payoutId != null && row.payoutId !== '' ? String(row.payoutId) : ''
         });
@@ -675,6 +670,9 @@ const PayoneerSheetPage = () => {
             setLoading(true);
             const payload = { ...formData };
             if (!payload.ebayPayoutId?.trim()) delete payload.ebayPayoutId;
+            if (payload.paymentDate && /^\d{4}-\d{2}-\d{2}$/.test(String(payload.paymentDate).trim())) {
+                payload.paymentDate = ptYyyyMmDdToIsoString(payload.paymentDate.trim());
+            }
             await api.post('/payoneer', payload);
             setOpenDialog(false);
             setAutoFillHint('');
@@ -704,7 +702,7 @@ const PayoneerSheetPage = () => {
         setEditingId(record._id);
         setEditFormData({
             bankAccount: record.bankAccount?._id,
-            paymentDate: record.paymentDate ? record.paymentDate.split('T')[0] : '',
+            paymentDate: record.paymentDate ? formatYyyyMmDdPt(record.paymentDate) : '',
             amount: record.amount,
             exchangeRate: record.exchangeRate,
             store: record.store?._id,
@@ -724,7 +722,11 @@ const PayoneerSheetPage = () => {
 
     const saveEdit = async () => {
         try {
-            await api.put(`/payoneer/${editingId}`, editFormData);
+            const payload = { ...editFormData };
+            if (payload.paymentDate && /^\d{4}-\d{2}-\d{2}$/.test(String(payload.paymentDate).trim())) {
+                payload.paymentDate = ptYyyyMmDdToIsoString(payload.paymentDate.trim());
+            }
+            await api.put(`/payoneer/${editingId}`, payload);
             setEditingId(null);
             fetchRecords();
         } catch (error) {
@@ -738,7 +740,7 @@ const PayoneerSheetPage = () => {
             if (field === 'bankAccount') return record.bankAccount?.name || '—';
             if (field === 'store') return record.store?.user?.username || '—';
             if (field === 'amount') return formatUsd(record.amount);
-            if (field === 'paymentDate') return record.paymentDate ? new Date(record.paymentDate).toLocaleDateString() : '—';
+            if (field === 'paymentDate') return record.paymentDate ? formatPaymentDateDisplayPt(record.paymentDate) : '—';
             if (field === 'exchangeRate') return '—';
             return '—';
         }
@@ -754,8 +756,8 @@ const PayoneerSheetPage = () => {
             if (field === 'bankDeposit') return formatInr(value, 2);
             if (field === 'exchangeRate') return formatInr(value, 2);
             if (field === 'actualExchangeRate') return formatInr(value, 4);
-            if (field === 'paymentDate') return new Date(value).toLocaleDateString();
-            if (field === 'periodStart' || field === 'periodEnd') return value ? new Date(value).toLocaleDateString() : '-';
+            if (field === 'paymentDate') return formatPaymentDateDisplayPt(value);
+            if (field === 'periodStart' || field === 'periodEnd') return value ? formatPaymentDateDisplayPt(value) : '-';
             return value;
         }
 
@@ -1047,7 +1049,7 @@ const PayoneerSheetPage = () => {
                                                 Bank (suggested): {record.bankAccount?.name || '—'}
                                             </Typography>
                                             <Typography variant="body2">
-                                                {record.paymentDate ? new Date(record.paymentDate).toLocaleDateString() : '—'} ·{' '}
+                                                {record.paymentDate ? formatPaymentDateDisplayPt(record.paymentDate) : '—'} ·{' '}
                                                 {formatUsd(record.amount)}{' '}
                                                 {f?.currency || 'USD'}
                                             </Typography>
@@ -1187,9 +1189,9 @@ const PayoneerSheetPage = () => {
                                                 </Stack>
                                             ) : (
                                                 <Typography variant="body2" sx={{ whiteSpace: 'nowrap' }}>
-                                                    {record.periodStart ? new Date(record.periodStart).toLocaleDateString() : '-'}
+                                                    {record.periodStart ? formatPaymentDateDisplayPt(record.periodStart) : '-'}
                                                     {' → '}
-                                                    {record.periodEnd ? new Date(record.periodEnd).toLocaleDateString() : '-'}
+                                                    {record.periodEnd ? formatPaymentDateDisplayPt(record.periodEnd) : '-'}
                                                 </Typography>
                                             )}
                                         </TableCell>
@@ -1380,6 +1382,7 @@ const PayoneerSheetPage = () => {
                             InputLabelProps={{ shrink: true }}
                             value={formData.paymentDate}
                             onChange={(e) => setFormData({ ...formData, paymentDate: e.target.value })}
+                            helperText="Calendar date is US Pacific (America/Los_Angeles)."
                         />
 
                         {formData.ebayPayoutId ? (

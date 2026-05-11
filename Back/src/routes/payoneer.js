@@ -3,8 +3,21 @@ import PayoneerRecord from '../models/PayoneerRecord.js';
 import Transaction from '../models/Transaction.js';
 import { requireAuth, requirePageAccess } from '../middleware/auth.js';
 import { importPayoneerFieldsFromGmail } from '../utils/gmailPayoneerImporter.js';
+import { getPTDayBoundsUTC } from '../utils/pacificDayBounds.js';
 
 const router = express.Router();
+
+/** YYYY-MM-DD → start of that calendar day in PT; else parse as Date. */
+function normalizePaymentDateInput(v) {
+  if (v == null || v === '') return v;
+  if (v instanceof Date) return v;
+  const s = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return getPTDayBoundsUTC(s).start;
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? v : d;
+}
 
 // Helper to calculate fields
 const calculateFields = (amount, exchangeRate) => {
@@ -42,18 +55,26 @@ router.get('/', requireAuth, requirePageAccess('Payoneer'), async (req, res) => 
             query.store = store;
         }
 
-        // Date Filter
+        // Date filter: YYYY-MM-DD is interpreted as Pacific calendar day
         if (startDate || endDate) {
             query.paymentDate = {};
             if (startDate) {
-                // Assuming startDate is YYYY-MM-DD
-                query.paymentDate.$gte = new Date(startDate);
+                const s = String(startDate).trim();
+                if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+                    query.paymentDate.$gte = getPTDayBoundsUTC(s).start;
+                } else {
+                    query.paymentDate.$gte = new Date(startDate);
+                }
             }
             if (endDate) {
-                // Assuming endDate is YYYY-MM-DD, set to end of day
-                const end = new Date(endDate);
-                end.setHours(23, 59, 59, 999);
-                query.paymentDate.$lte = end;
+                const s = String(endDate).trim();
+                if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+                    query.paymentDate.$lte = getPTDayBoundsUTC(s).end;
+                } else {
+                    const end = new Date(endDate);
+                    end.setHours(23, 59, 59, 999);
+                    query.paymentDate.$lte = end;
+                }
             }
         }
 
@@ -119,7 +140,7 @@ router.post('/', requireAuth, requirePageAccess('Payoneer'), async (req, res) =>
 
         const newRecord = new PayoneerRecord({
             bankAccount,
-            paymentDate,
+            paymentDate: normalizePaymentDateInput(paymentDate),
             store,
             ...calcs,
             ...(payoutIdTrim && { ebayPayoutId: payoutIdTrim }),
@@ -175,7 +196,7 @@ router.put('/:id', requireAuth, requirePageAccess('Payoneer'), async (req, res) 
 
         // Update basic fields if provided
         if (bankAccount) record.bankAccount = bankAccount;
-        if (paymentDate) record.paymentDate = paymentDate;
+        if (paymentDate) record.paymentDate = normalizePaymentDateInput(paymentDate);
         if (store) record.store = store;
         if (ebayPayoutId !== undefined) {
             const payoutIdTrim = typeof ebayPayoutId === 'string' && ebayPayoutId.trim() ? ebayPayoutId.trim() : null;
