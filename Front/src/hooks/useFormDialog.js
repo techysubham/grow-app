@@ -107,7 +107,11 @@ export default function useFormDialog(initialValues, { onSave, onAfterSave } = {
             handleClose();
             onAfterSave?.();
         } catch (err) {
-            setSaveError(err.response?.data?.error || 'Failed to save');
+            const fromApi =
+                err.response?.data?.error ||
+                err.response?.data?.message ||
+                (Array.isArray(err.response?.data?.details) && err.response.data.details[0]?.message);
+            setSaveError(fromApi || (typeof err.message === 'string' ? err.message : '') || 'Failed to save');
         } finally {
             setSaving(false);
         }

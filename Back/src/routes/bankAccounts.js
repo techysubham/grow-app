@@ -11,7 +11,7 @@ const router = express.Router();
 // Accessible from both BankAccounts page and Transactions page (for dropdown)
 router.get('/', requireAuth, requirePageAccess(['BankAccounts', 'Transactions','Payoneer']), async (req, res) => {
     try {
-        const accounts = await BankAccount.find().sort({ name: 1 }).lean();
+        const accounts = await BankAccount.find().sort({ name: 1, createdAt: 1 }).lean();
         const countAgg = await PayoneerRecord.aggregate([
             { $group: { _id: '$bankAccount', count: { $sum: 1 } } }
         ]);
@@ -37,6 +37,12 @@ router.post('/', requireAuth, requirePageAccess('BankAccounts'), validate(create
         await newAccount.save();
         res.status(201).json(newAccount);
     } catch (err) {
+        if (err?.code === 11000 && String(err.message || '').includes('name')) {
+            return res.status(400).json({
+                error:
+                    'Duplicate bank names are blocked until the old unique index is removed. Restart the API after deploying the latest backend (it syncs indexes on startup), or in MongoDB run: db.bankaccounts.dropIndex("name_1").',
+            });
+        }
         res.status(500).json({ error: err.message });
     }
 });
@@ -53,6 +59,12 @@ router.put('/:id', requireAuth, requirePageAccess('BankAccounts'), async (req, r
         );
         res.json(account);
     } catch (err) {
+        if (err?.code === 11000 && String(err.message || '').includes('name')) {
+            return res.status(400).json({
+                error:
+                    'That bank name is still tied to a unique index in the database. Restart the API after deploying the latest backend, or drop index name_1 on bankaccounts.',
+            });
+        }
         res.status(500).json({ error: err.message });
     }
 });

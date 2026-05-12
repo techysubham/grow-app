@@ -65,6 +65,16 @@ const EMPTY_PAYONEER_FORM = () => ({
 /** Max DB rows to merge with eBay feed (client-side sort + pagination). */
 const MERGE_FETCH_LIMIT = 5000;
 
+/** First-paint ?bankAccount= so the initial /payoneer request matches the URL (avoids a wasted fetch). */
+function getInitialBankAccountQuery() {
+    if (typeof window === 'undefined') return '';
+    try {
+        return new URLSearchParams(window.location.search).get('bankAccount') || '';
+    } catch {
+        return '';
+    }
+}
+
 function dbRowDedupeKey(r) {
     const sid = String(r.store?._id || '');
     const d = formatYyyyMmDdPt(r.paymentDate);
@@ -266,18 +276,17 @@ const PayoneerSheetPage = () => {
     const [openDialog, setOpenDialog] = useState(false);
     const [loading, setLoading] = useState(false);
     const [gmailSyncLoading, setGmailSyncLoading] = useState(false);
-    const [pageLoading, setPageLoading] = useState(true);
 
     const [searchParams, setSearchParams] = useSearchParams();
 
     // Advanced Filter State
-    const [filters, setFilters] = useState({
+    const [filters, setFilters] = useState(() => ({
         store: '',
-        bankAccount: '', // BankAccount _id — synced with ?bankAccount= from Bank Accounts page
+        bankAccount: getInitialBankAccountQuery(),
         dateMode: 'none', // 'none', 'single', 'range'
         singleDate: '',
         dateRange: { start: '', end: '' }
-    });
+    }));
 
     // Client-side pagination over merged (eBay feed + saved) rows
     const [pagination, setPagination] = useState({
@@ -360,11 +369,14 @@ const PayoneerSheetPage = () => {
         return rows;
     }, [payoutFeedRows, filters]);
 
-    // Deep link from Bank Accounts: /admin/payoneer?bankAccount=<id> (keep filter in sync with URL)
+    // Deep link from Bank Accounts: /admin/payoneer?bankAccount=<id> (keep filter in sync with URL).
+    // Return same `filters` reference when ?bankAccount= unchanged so we do not re-fetch /payoneer twice on mount.
     useEffect(() => {
         const bid = searchParams.get('bankAccount') || '';
-        setFilters((prev) => ({ ...prev, bankAccount: bid }));
-        setPagination((prev) => ({ ...prev, page: 1 }));
+        setFilters((prev) => {
+            if (prev.bankAccount === bid) return prev;
+            return { ...prev, bankAccount: bid };
+        });
     }, [searchParams]);
 
     // Fetch all matching saved rows (high limit) when filters change — merge with eBay feed is client-side
@@ -407,7 +419,6 @@ const PayoneerSheetPage = () => {
             console.error('Failed to fetch records:', error);
         } finally {
             setLoading(false);
-            setPageLoading(false);
         }
     };
 
@@ -805,12 +816,6 @@ const PayoneerSheetPage = () => {
         );
     };
 
-    if (pageLoading) return (
-        <Box sx={{ display: 'flex', justifyContent: 'center', mt: 6 }}>
-            <CircularProgress />
-        </Box>
-    );
-
     return (
         <Box sx={{ p: { xs: 1.5, sm: 2, md: 3 } }}>
             <Box
@@ -984,6 +989,14 @@ const PayoneerSheetPage = () => {
                     <CircularProgress size={22} />
                     <Typography variant="body2" color="text.secondary">
                         Loading eBay completed payouts…
+                    </Typography>
+                </Box>
+            )}
+            {loading && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
+                    <CircularProgress size={22} />
+                    <Typography variant="body2" color="text.secondary">
+                        Loading saved Payoneer records…
                     </Typography>
                 </Box>
             )}

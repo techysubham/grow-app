@@ -28,6 +28,7 @@ import {
     MenuItem,
     FormHelperText,
     Alert,
+    Chip,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
@@ -41,7 +42,7 @@ import {
     isMongoIdString,
     normalizeBankSellersPayload,
 } from '../../lib/bankAccountSellers.js';
-import { bankAccountMenuLabel } from '../../lib/bankAccountLabel.js';
+import { bankAccountMenuLabel, bankAccountListLabelDraft } from '../../lib/bankAccountLabel.js';
 
 const INITIAL_FORM = { name: '', accountNumber: '', ifscCode: '', sellers: '' };
 
@@ -102,6 +103,9 @@ const BankAccountsPage = () => {
     /** Same API as Settings → Stores page (`StoresPage.jsx`). */
     const [sellers, setSellers] = useState([]);
 
+    /** Stores dropdown: close after each pick so the full list is not left open (multi-select). */
+    const [storesMenuOpen, setStoresMenuOpen] = useState(false);
+
     const { rows: accounts, loading, refetch } = useFetchTable('/bank-accounts');
 
     const loadSellers = useCallback(() => {
@@ -145,6 +149,10 @@ const BankAccountsPage = () => {
         return cancel;
     }, [dialog.open, loadSellers]);
 
+    useEffect(() => {
+        if (!dialog.open) setStoresMenuOpen(false);
+    }, [dialog.open]);
+
     const selectedSellerIds = useMemo(() => {
         const tokens = sellersFieldToTokens(dialog.formData.sellers);
         const ids = [];
@@ -175,6 +183,18 @@ const BankAccountsPage = () => {
             return { ...prev, sellers: [...ids, ...legacy].join(', ') };
         });
     };
+
+    const listLabelPreview = useMemo(
+        () =>
+            bankAccountListLabelDraft(
+                dialog.formData.name,
+                dialog.formData.accountNumber,
+                dialog.editingId
+            ),
+        [dialog.formData.name, dialog.formData.accountNumber, dialog.editingId]
+    );
+
+    const canSave = Boolean(String(dialog.formData.name || '').trim());
 
     const handleDelete = async (id) => {
         if (!window.confirm('Delete this bank account?')) return;
@@ -284,37 +304,67 @@ const BankAccountsPage = () => {
                     paper: { sx: { overflow: 'visible' } },
                 }}
             >
-                <DialogTitle>{dialog.editingId ? 'Edit Bank Account' : 'New Bank Account'}</DialogTitle>
+                <DialogTitle>
+                    <Stack spacing={0.5}>
+                        <Typography component="span" variant="h6">
+                            {dialog.editingId ? 'Edit Bank Account' : 'New Bank Account'}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 400 }}>
+                            Same bank name is allowed for different accounts. Add an account number when names match so
+                            Payoneer and other pages can tell them apart.
+                        </Typography>
+                    </Stack>
+                </DialogTitle>
                 <DialogContent sx={{ pt: 2, overflow: 'visible' }}>
                     {dialog.saveError ? (
                         <Alert severity="error" sx={{ mb: 2 }}>
                             {dialog.saveError}
                         </Alert>
                     ) : null}
+                    {listLabelPreview !== '—' ? (
+                        <Alert severity="info" sx={{ mb: 2, py: 0.75 }} icon={false}>
+                            <Typography variant="body2" component="div">
+                                <strong>Shown in menus</strong> (Payoneer, Transactions, etc.):{' '}
+                                <Box component="span" sx={{ fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all' }}>
+                                    {listLabelPreview}
+                                </Box>
+                            </Typography>
+                        </Alert>
+                    ) : null}
                     <Box display="flex" flexDirection="column" gap={2}>
                         <TextField
-                            label="Bank Name"
+                            label="Bank name"
                             fullWidth
+                            required
+                            autoFocus
                             value={dialog.formData.name}
                             onChange={(e) => dialog.setFormData({ ...dialog.formData, name: e.target.value })}
+                            helperText="Display label only. Duplicates are OK if each row has different stores or account details."
                         />
                         <TextField
-                            label="Account Number (Optional)"
+                            label="Account number"
                             fullWidth
                             value={dialog.formData.accountNumber}
                             onChange={(e) => dialog.setFormData({ ...dialog.formData, accountNumber: e.target.value })}
+                            helperText="Optional but recommended when several rows share the same bank name (last digits appear in lists)."
+                            placeholder="Optional"
                         />
                         <TextField
-                            label="IFSC Code (Optional)"
+                            label="IFSC code"
                             fullWidth
                             value={dialog.formData.ifscCode}
                             onChange={(e) => dialog.setFormData({ ...dialog.formData, ifscCode: e.target.value })}
+                            helperText="Optional (India domestic transfers)."
+                            placeholder="Optional"
                         />
                         <FormControl fullWidth>
                             <InputLabel id="bank-account-stores-label">Stores (Settings → Stores)</InputLabel>
                             <Select
                                 labelId="bank-account-stores-label"
                                 multiple
+                                open={storesMenuOpen}
+                                onOpen={() => setStoresMenuOpen(true)}
+                                onClose={() => setStoresMenuOpen(false)}
                                 disabled={sellerOptions.length === 0}
                                 value={selectedSellerIds}
                                 onChange={(e) => {
@@ -325,18 +375,47 @@ const BankAccountsPage = () => {
                                           ? raw.split(',').map((s) => s.trim()).filter(Boolean)
                                           : [];
                                     setSellersFromParts(nextIds);
+                                    setStoresMenuOpen(false);
                                 }}
                                 input={<OutlinedInput label="Stores (Settings → Stores)" />}
-                                renderValue={(selected) =>
-                                    selected.length
-                                        ? selected
-                                              .map((id) => sellerOptions.find((o) => String(o.id) === String(id))?.bankToken)
-                                              .filter(Boolean)
-                                              .join(', ')
-                                        : sellerOptions.length === 0
-                                          ? 'No stores'
-                                          : 'Select stores…'
-                                }
+                                renderValue={(selected) => {
+                                    if (!selected.length) {
+                                        return sellerOptions.length === 0 ? 'No stores' : 'Select stores…';
+                                    }
+                                    return (
+                                        <Box
+                                            sx={{
+                                                display: 'flex',
+                                                flexWrap: 'wrap',
+                                                gap: 0.5,
+                                                py: 0.25,
+                                                maxHeight: 88,
+                                                overflow: 'auto',
+                                            }}
+                                            onMouseDown={(e) => e.stopPropagation()}
+                                        >
+                                            {selected.map((id) => {
+                                                const o = sellerOptions.find((x) => String(x.id) === String(id));
+                                                if (!o) return null;
+                                                return (
+                                                    <Chip
+                                                        key={id}
+                                                        size="small"
+                                                        label={o.label}
+                                                        onDelete={(ev) => {
+                                                            ev.preventDefault();
+                                                            ev.stopPropagation();
+                                                            const next = selected.filter(
+                                                                (x) => String(x) !== String(id)
+                                                            );
+                                                            setSellersFromParts(next);
+                                                        }}
+                                                    />
+                                                );
+                                            })}
+                                        </Box>
+                                    );
+                                }}
                                 MenuProps={{
                                     disablePortal: true,
                                     PaperProps: {
@@ -359,8 +438,9 @@ const BankAccountsPage = () => {
                                 ) : (
                                     <>
                                         Same eBay seller accounts as{' '}
-                                        <RouterLink to="/admin/stores-page">Settings → Stores</RouterLink>. Selected
-                                        usernames are saved in Sellers (used by Payoneer to match the right store).
+                                        <RouterLink to="/admin/stores-page">Settings → Stores</RouterLink>. Pick one
+                                        store at a time—the list closes after each choice. Remove a store with the × on
+                                        its chip. Saved as store IDs for Payoneer matching.
                                     </>
                                 )}
                             </FormHelperText>
@@ -369,7 +449,11 @@ const BankAccountsPage = () => {
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={dialog.handleClose}>Cancel</Button>
-                    <Button onClick={dialog.handleSave} variant="contained" disabled={dialog.saving}>
+                    <Button
+                        onClick={dialog.handleSave}
+                        variant="contained"
+                        disabled={dialog.saving || !canSave}
+                    >
                         {dialog.saving ? 'Saving…' : 'Save'}
                     </Button>
                 </DialogActions>
