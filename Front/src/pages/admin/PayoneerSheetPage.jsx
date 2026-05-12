@@ -355,14 +355,14 @@ const PayoneerSheetPage = () => {
             const d = filters.singleDate;
             rows = rows.filter((r) => r.payoutDate && formatYyyyMmDdPt(r.payoutDate) === d);
         } else if (filters.dateMode === 'range' && (filters.dateRange.start || filters.dateRange.end)) {
-            const start = filters.dateRange.start ? new Date(filters.dateRange.start) : null;
-            const end = filters.dateRange.end ? new Date(filters.dateRange.end) : null;
-            if (end) end.setHours(23, 59, 59, 999);
+            const startStr = String(filters.dateRange.start || '').trim();
+            const endStr = String(filters.dateRange.end || '').trim();
             rows = rows.filter((r) => {
-                const pd = new Date(r.payoutDate);
-                if (Number.isNaN(pd.getTime())) return false;
-                if (start && pd < start) return false;
-                if (end && pd > end) return false;
+                if (!r.payoutDate) return false;
+                const pdStr = formatYyyyMmDdPt(r.payoutDate);
+                if (!pdStr) return false;
+                if (startStr && pdStr < startStr) return false;
+                if (endStr && pdStr > endStr) return false;
                 return true;
             });
         }
