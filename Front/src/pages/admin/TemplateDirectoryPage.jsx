@@ -750,6 +750,7 @@ export default function TemplateDirectoryPage() {
       <AsinReviewModal
         open={reviewModal}
         sellerId={selectedSeller?._id || ''}
+        pricingConfig={template?.pricingConfig || null}
         onClose={() => { setReviewModal(false); setPreviewItems([]); }}
         previewItems={previewItems}
         onSave={handleSaveFromReview}

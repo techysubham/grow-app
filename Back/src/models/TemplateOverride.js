@@ -95,11 +95,6 @@ const pricingConfigSchema = new mongoose.Schema({
     required: false,
     default: null
   },
-  fixedFee: {
-    type: Number,
-    required: false,
-    default: 0
-  },
   saleTax: {
     type: Number,
     required: false,

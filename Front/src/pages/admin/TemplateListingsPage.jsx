@@ -2467,6 +2467,7 @@ export default function TemplateListingsPage() {
         marketplace={region}
         sellerId={sellerId}
         storeTemplateHtml={selectedStoreTemplate?.html || ''}
+        pricingConfig={pricingConfig}
         onClose={() => {
           // Clean up EventSource if still active
           if (window._currentEventSource) {

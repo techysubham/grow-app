@@ -732,6 +732,7 @@ export default function ListingDirectoryPage() {
       <AsinReviewModal
         open={reviewModal}
         sellerId={seller?._id || ''}
+        pricingConfig={template?.pricingConfig || null}
         onClose={() => { setReviewModal(false); setPreviewItems([]); }}
         previewItems={previewItems}
         onSave={handleSaveFromReview}

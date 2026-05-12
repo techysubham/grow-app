@@ -93,13 +93,24 @@ export default function PricingConfigSection({ pricingConfig, onChange }) {
           <Grid container spacing={2} sx={{ mb: 3 }}>
             <Grid item xs={12} md={6}>
               <TextField
-                label="Transaction/Container Fee (INR)"
+                label="eBay fixed (USD)"
                 type="number"
-                value={pricingConfig?.fixedFee ?? 0}
-                onChange={(e) => handleFieldChange('fixedFee', e.target.value)}
-                helperText="Fixed fee per transaction"
+                value={pricingConfig?.ebayFixedUsd ?? 0.4}
+                onChange={(e) => handleFieldChange('ebayFixedUsd', e.target.value)}
+                helperText="Added to % of A (default 0.40)"
                 fullWidth
-                inputProps={{ step: 1, min: 0 }}
+                inputProps={{ step: 0.01, min: 0 }}
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <TextField
+                label="T.Cont (USD)"
+                type="number"
+                value={pricingConfig?.transactionContUsd ?? 0.24}
+                onChange={(e) => handleFieldChange('transactionContUsd', e.target.value)}
+                helperText="Per order (default 0.24)"
+                fullWidth
+                inputProps={{ step: 0.01, min: 0 }}
               />
             </Grid>
           </Grid>
@@ -113,20 +124,22 @@ export default function PricingConfigSection({ pricingConfig, onChange }) {
           <Grid container spacing={2} sx={{ mb: 3 }}>
             <Grid item xs={6} md={3}>
               <TextField
-                label="Sales Tax (%)"
+                label="Sale tax on sold (%)"
                 type="number"
-                value={pricingConfig?.saleTax ?? 0}
+                value={pricingConfig?.saleTax ?? 10}
                 onChange={(e) => handleFieldChange('saleTax', e.target.value)}
+                helperText="Fee base A = Sold × (1 + this/100). Default 10 → A = 1.1×Sold"
                 fullWidth
                 inputProps={{ step: 0.1, min: 0, max: 100 }}
               />
             </Grid>
             <Grid item xs={6} md={3}>
               <TextField
-                label="eBay Fee (%)"
+                label="eBay fee on A (%)"
                 type="number"
-                value={pricingConfig?.ebayFee ?? 12.9}
+                value={pricingConfig?.ebayFee ?? 13.95}
                 onChange={(e) => handleFieldChange('ebayFee', e.target.value)}
+                helperText="eBay USD = A × (this/100) + eBay fixed USD above"
                 fullWidth
                 inputProps={{ step: 0.1, min: 0, max: 100 }}
               />
@@ -135,7 +148,7 @@ export default function PricingConfigSection({ pricingConfig, onChange }) {
               <TextField
                 label="Ads Fee (%)"
                 type="number"
-                value={pricingConfig?.adsFee ?? 3}
+                value={pricingConfig?.adsFee ?? 15}
                 onChange={(e) => handleFieldChange('adsFee', e.target.value)}
                 fullWidth
                 inputProps={{ step: 0.1, min: 0, max: 100 }}
@@ -187,11 +200,14 @@ export default function PricingConfigSection({ pricingConfig, onChange }) {
           {/* Formula Preview */}
           <Alert severity="info" sx={{ mt: 2 }}>
             <Typography variant="body2" component="div">
-              <strong>Formula:</strong>
+              <strong>Formula (settlement):</strong>
               <Box component="div" sx={{ fontFamily: 'monospace', fontSize: '0.85rem', mt: 1 }}>
-                Start Price = ((
-                {pricingConfig?.profitTiers?.enabled ? 'Applicable Profit (from tier)' : 'Desired Profit'} + (Buying Price × Spent Rate)) / Payout Rate + Fixed Fee) /{' '}
-                (1 - (1 + Sales Tax) × (eBay Fee + Ads + TDS))
+                Net USD = Sold − eBay(A) − ADS(A) − TDS(A) − T.Cont, with{' '}
+                <strong>A = Sold × (1 + sale tax on sold / 100)</strong> and{' '}
+                <strong>eBay = A × (eBay % / 100) + eBay fixed USD</strong>. Use the fields above for your % values.
+                <br />
+                Target INR profit = Payout×Net − (Buying USD×Spent). Start price solves for Sold so that equals{' '}
+                {pricingConfig?.profitTiers?.enabled ? 'tier profit' : 'desired profit'}.
               </Box>
               
               {pricingConfig?.profitTiers?.enabled && pricingConfig?.profitTiers?.tiers?.length > 0 && (

@@ -98,11 +98,6 @@ const pricingConfigSchema = new mongoose.Schema({
     required: false,
     default: null
   },
-  fixedFee: {
-    type: Number,
-    required: false,
-    default: 0
-  },
   // Percentage-based fees
   saleTax: {
     type: Number,

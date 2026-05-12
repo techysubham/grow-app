@@ -81,14 +81,15 @@ const DEFAULT_ASIN_FIELD_CONFIGS = [
 
 const DEFAULT_TEMPLATE_PRICING_CONFIG = {
   enabled: true,
-  spentRate: 93,
+  spentRate: 95,
   payoutRate: 87,
   desiredProfit: null,
-  fixedFee: 0.24,
-  saleTax: 0,
-  ebayFee: 12.9,
+  saleTax: 10,
+  ebayFee: 13.95,
   adsFee: 15,
   tdsFee: 1,
+  ebayFixedUsd: 0.4,
+  transactionContUsd: 0.24,
   shippingCost: 0,
   taxRate: 10
 };

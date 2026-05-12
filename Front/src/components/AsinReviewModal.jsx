@@ -37,6 +37,7 @@ import {
   Autorenew as AutorenewIcon
 } from '@mui/icons-material';
 import api from '../lib/api.js';
+import { calcInrProfitFromPricingCalculator } from '../utils/pricingProfitPreview.js';
 
 const MARKETPLACE_DOMAINS = {
   US: 'www.amazon.com',
@@ -281,23 +282,49 @@ function applyStoreTemplatePlaceholders(templateHtml = '', generatedListing = {}
 }
 
 /**
- * Calculates "Actual Profit" (INR) for a US marketplace listing.
- * @param {number} buyingPrice - Amazon price in USD
- * @param {number} sold - eBay Start Price in USD
- * @returns {object} All intermediate values + actualProfit, all rounded to 2dp
+ * Settlement-style profit (INR): Payoneer (Net×payout) − Amazon spend (basis×spent).
+ * A = sold×(1+saleTax/100); eBay = A×(ebayFee/100)+fixed (defaults from opts / template).
  */
-function calcActualProfit(buyingPrice, sold) {
-  const A            = parseFloat((sold * 1.1).toFixed(2));
-  const eBay         = parseFloat((A * 0.1395 + 0.4).toFixed(2));
-  const ADS          = parseFloat((A * 0.15).toFixed(2));
-  const TDS          = parseFloat((A * 0.01).toFixed(2));
-  const TCont        = 0.24;
-  const Net          = parseFloat((sold - eBay - ADS - TDS - TCont).toFixed(2));
-  const AmazonWithTax = parseFloat((buyingPrice * 1.1).toFixed(2));
-  const Payoneer     = parseFloat((Net * 90).toFixed(2));
-  const AmazonExpense = parseFloat((AmazonWithTax * 95).toFixed(2));
+function calcActualProfit(buyingPrice, sold, opts = {}) {
+  const n = (v, d) => {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : d;
+  };
+  const payoutRate = n(opts.payoutRate, 87);
+  const spentRate = n(opts.spentRate, 95);
+  const taxRateOnCost = n(opts.taxRate, 10);
+  const saleTaxPctOnSold = n(opts.saleTax, 10);
+  const ebayPct = n(opts.ebayFee, 13.95) / 100;
+  const adsPct = n(opts.adsFee, 15) / 100;
+  const tdsPct = n(opts.tdsFee, 1) / 100;
+  const ebayFixed = n(opts.ebayFixedUsd, 0.4);
+  const tCont = n(opts.transactionContUsd, 0.24);
+
+  const mult = 1 + saleTaxPctOnSold / 100;
+  const A = parseFloat((sold * mult).toFixed(2));
+  const eBay = parseFloat((A * ebayPct + ebayFixed).toFixed(2));
+  const ADS = parseFloat((A * adsPct).toFixed(2));
+  const TDS = parseFloat((A * tdsPct).toFixed(2));
+  const Net = parseFloat((sold - eBay - ADS - TDS - tCont).toFixed(2));
+  const costMult = 1 + taxRateOnCost / 100;
+  const AmazonWithTax = parseFloat((buyingPrice * costMult).toFixed(2));
+  const Payoneer = parseFloat((Net * payoutRate).toFixed(2));
+  const AmazonExpense = parseFloat((AmazonWithTax * spentRate).toFixed(2));
   const actualProfit = parseFloat((Payoneer - AmazonExpense).toFixed(2));
-  return { A, eBay, ADS, TDS, TCont, Net, AmazonWithTax, Payoneer, AmazonExpense, actualProfit };
+  return {
+    A,
+    eBay,
+    ADS,
+    TDS,
+    TCont: tCont,
+    Net,
+    AmazonWithTax,
+    Payoneer,
+    AmazonExpense,
+    actualProfit,
+    payoutRate,
+    spentRate
+  };
 }
 
 export default function AsinReviewModal({ 
@@ -309,7 +336,9 @@ export default function AsinReviewModal({
   templateColumns = [],
   marketplace = 'US',
   sellerId = '',
-  storeTemplateHtml = ''
+  storeTemplateHtml = '',
+  /** When set, fills missing rates on older pricingCalculation.breakdown rows */
+  pricingConfig = null
 }) {
   const DESCRIPTION_TEMPLATE_STORAGE_KEY = 'description-templates.gallery.v1';
   const STORE_TEMPLATE_MAP_KEY = 'store-description-template-map.v1';
@@ -331,13 +360,45 @@ export default function AsinReviewModal({
   const itemData = editedItems[currentItem?.id] || currentItem?.generatedListing || {};
   const isStartPriceEditing = !!(currentItem?.id && startPriceEditMode[currentItem.id]);
   const startPriceValue = itemData.startPrice ?? '';
+  const soldPriceUsd = parseFloat(startPriceValue);
+  const pricingBreakdown = currentItem?.pricingCalculation?.breakdown;
+  const pricingCalcActive =
+    currentItem?.pricingCalculation?.enabled &&
+    !currentItem?.pricingCalculation?.error &&
+    pricingBreakdown;
+
+  const calculatorProfit =
+    pricingCalcActive && !isNaN(soldPriceUsd) && soldPriceUsd > 0
+      ? calcInrProfitFromPricingCalculator(pricingBreakdown, pricingConfig, soldPriceUsd)
+      : null;
+
   const actualProfitBuyingPrice = parseFloat(currentItem?.sourceData?.price);
-  const actualProfitSoldPrice = parseFloat(startPriceValue);
-  const showActualProfit = marketplace === 'US'
-    && !isNaN(actualProfitBuyingPrice) && actualProfitBuyingPrice > 0
-    && !isNaN(actualProfitSoldPrice) && actualProfitSoldPrice > 0;
-  const actualProfit = showActualProfit ? calcActualProfit(actualProfitBuyingPrice, actualProfitSoldPrice) : null;
-  const actualProfitColor = actualProfit && actualProfit.actualProfit < 300 ? 'error' : 'success';
+  const legacyActualProfit =
+    marketplace === 'US' &&
+    !calculatorProfit &&
+    !isNaN(actualProfitBuyingPrice) &&
+    actualProfitBuyingPrice > 0 &&
+    !isNaN(soldPriceUsd) &&
+    soldPriceUsd > 0
+      ? calcActualProfit(actualProfitBuyingPrice, soldPriceUsd, {
+          payoutRate: pricingConfig?.payoutRate,
+          spentRate: pricingConfig?.spentRate,
+          saleTax: pricingConfig?.saleTax,
+          taxRate: pricingConfig?.taxRate,
+          ebayFee: pricingConfig?.ebayFee,
+          adsFee: pricingConfig?.adsFee,
+          tdsFee: pricingConfig?.tdsFee,
+          ebayFixedUsd: pricingConfig?.ebayFixedUsd,
+          transactionContUsd: pricingConfig?.transactionContUsd
+        })
+      : null;
+
+  const showProfitChip = !!(calculatorProfit || legacyActualProfit);
+  const displayProfitInr = calculatorProfit
+    ? calculatorProfit.profitINR
+    : legacyActualProfit?.actualProfit ?? null;
+  const actualProfitColor =
+    displayProfitInr != null && displayProfitInr < 300 ? 'error' : 'success';
 
   // Initialize edited items from preview data
   useEffect(() => {
@@ -690,27 +751,73 @@ export default function AsinReviewModal({
   }
 
 
-  const actualProfitTooltipContent = actualProfit ? (
-    <Box sx={{ fontFamily: 'monospace', fontSize: '0.72rem', lineHeight: 1.8, p: 0.5 }}>
-      <Box>Bought (Amazon):&nbsp; ${actualProfitBuyingPrice.toFixed(2)}</Box>
-      <Box>Sold (Start):&nbsp;&nbsp;&nbsp;&nbsp; ${actualProfitSoldPrice.toFixed(2)}</Box>
-      <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.3)' }} />
-      <Box>A (eBay+Tax):&nbsp;&nbsp;&nbsp;&nbsp; ${actualProfit.A.toFixed(2)}&nbsp; (Sold × 1.1)</Box>
-      <Box>eBay Fee:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${actualProfit.eBay.toFixed(2)}&nbsp; (A × 13.95% + $0.40)</Box>
-      <Box>ADS:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${actualProfit.ADS.toFixed(2)}&nbsp; (A × 15%)</Box>
-      <Box>TDS:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${actualProfit.TDS.toFixed(2)}&nbsp; (A × 1%)</Box>
-      <Box>T.Cont:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${actualProfit.TCont.toFixed(2)}</Box>
-      <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.3)' }} />
-      <Box>Net (USD):&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${actualProfit.Net.toFixed(2)}&nbsp; (Sold − eBay − ADS − TDS − T.Cont)</Box>
-      <Box>Amazon + Tax:&nbsp;&nbsp; ${actualProfit.AmazonWithTax.toFixed(2)}&nbsp; (Bought + 10% of Bought)</Box>
-      <Box>Payoneer (INR):&nbsp;&nbsp; ₹{actualProfit.Payoneer.toFixed(2)}&nbsp; (Net × 90)</Box>
-      <Box>Amazon Spend:&nbsp;&nbsp;&nbsp;&nbsp; ₹{actualProfit.AmazonExpense.toFixed(2)}&nbsp; ((Amazon + Tax) × 95)</Box>
-      <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.3)' }} />
-      <Box sx={{ fontWeight: 700, color: actualProfit.actualProfit < 300 ? '#e57373' : '#81c784' }}>
-        Actual Profit:&nbsp;&nbsp;&nbsp;&nbsp; ₹{actualProfit.actualProfit.toFixed(2)}
-      </Box>
-    </Box>
-  ) : '';
+  const profitTooltipContent = (() => {
+    if (calculatorProfit?.mode === 'legacy_fee_multiplier') {
+      return (
+        <Box sx={{ fontFamily: 'monospace', fontSize: '0.72rem', lineHeight: 1.8, p: 0.5 }}>
+          <Box sx={{ opacity: 0.92, mb: 0.5 }}>Older pricing snapshot (previous fee-multiplier model)</Box>
+          <Box>Fee mult:&nbsp; {calculatorProfit.feeMultiplier}</Box>
+          <Box>Profit component (INR):&nbsp; {calculatorProfit.profitComponent}</Box>
+          <Box>Buying (INR):&nbsp; {calculatorProfit.buyingPriceINR}</Box>
+          <Box sx={{ fontWeight: 700, color: displayProfitInr < 300 ? '#e57373' : '#81c784' }}>
+            Net margin (INR):&nbsp; ₹{(displayProfitInr ?? 0).toFixed(2)}
+          </Box>
+        </Box>
+      );
+    }
+    if (calculatorProfit) {
+      return (
+        <Box sx={{ fontFamily: 'monospace', fontSize: '0.72rem', lineHeight: 1.8, p: 0.5 }}>
+          <Box sx={{ opacity: 0.92, mb: 0.5 }}>Template pricing calculator (settlement model)</Box>
+          <Box>Bought (basis, USD):&nbsp; ${Number(calculatorProfit.buyingPriceUSD ?? pricingBreakdown.buyingPriceUSD ?? 0).toFixed(2)}&nbsp; (cost + ship + tax on cost)</Box>
+          <Box>Amazon cost (USD):&nbsp; ${Number(calculatorProfit.cost ?? pricingBreakdown.cost ?? 0).toFixed(2)}</Box>
+          <Box>Sold (Start):&nbsp;&nbsp;&nbsp;&nbsp; ${soldPriceUsd.toFixed(2)}</Box>
+          <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.3)' }} />
+          <Box>Sold + tax (A):&nbsp; ${Number(calculatorProfit.soldPlusTax ?? 0).toFixed(2)}&nbsp; (Sold × (1 + saleTax/100))</Box>
+          <Box>eBay fee (USD):&nbsp;&nbsp; ${Number(calculatorProfit.eBayFeeUsd ?? 0).toFixed(2)}</Box>
+          <Box>ADS (USD):&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${Number(calculatorProfit.adsFeeUsd ?? 0).toFixed(2)}</Box>
+          <Box>TDS (USD):&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${Number(calculatorProfit.tdsFeeUsd ?? 0).toFixed(2)}</Box>
+          <Box>T.Cont (USD):&nbsp;&nbsp;&nbsp;&nbsp; ${Number(calculatorProfit.transactionContUsd ?? 0.24).toFixed(2)}</Box>
+          <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.3)' }} />
+          <Box>Net (USD):&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${Number(calculatorProfit.netUsd ?? 0).toFixed(2)}</Box>
+          <Box>Payoneer (INR):&nbsp;&nbsp; ₹{Number(calculatorProfit.payoneerInr ?? 0).toFixed(2)}&nbsp; (Net × {calculatorProfit.payoutRate})</Box>
+          <Box>Buying (INR):&nbsp;&nbsp;&nbsp;&nbsp; ₹{Number(calculatorProfit.buyingPriceINR ?? 0).toFixed(2)}&nbsp; (basis USD × {calculatorProfit.spentRate})</Box>
+          {calculatorProfit.targetProfitINR != null && (
+            <Box>Tier / target (INR):&nbsp; {calculatorProfit.targetProfitINR}</Box>
+          )}
+          <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.3)' }} />
+          <Box sx={{ fontWeight: 700, color: displayProfitInr < 300 ? '#e57373' : '#81c784' }}>
+            Net margin (INR):&nbsp; ₹{(displayProfitInr ?? 0).toFixed(2)}
+          </Box>
+        </Box>
+      );
+    }
+    if (legacyActualProfit) {
+      return (
+        <Box sx={{ fontFamily: 'monospace', fontSize: '0.72rem', lineHeight: 1.8, p: 0.5 }}>
+          <Box sx={{ opacity: 0.92, mb: 0.5 }}>Estimate (no auto pricing row) — same fee rules as calculator defaults</Box>
+          <Box>Bought (Amazon):&nbsp; ${actualProfitBuyingPrice.toFixed(2)}</Box>
+          <Box>Sold (Start):&nbsp;&nbsp;&nbsp;&nbsp; ${soldPriceUsd.toFixed(2)}</Box>
+          <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.3)' }} />
+          <Box>A (sold+tax):&nbsp;&nbsp;&nbsp;&nbsp; ${legacyActualProfit.A.toFixed(2)}</Box>
+          <Box>eBay Fee:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${legacyActualProfit.eBay.toFixed(2)}</Box>
+          <Box>ADS:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${legacyActualProfit.ADS.toFixed(2)}</Box>
+          <Box>TDS:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${legacyActualProfit.TDS.toFixed(2)}</Box>
+          <Box>T.Cont:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${legacyActualProfit.TCont.toFixed(2)}</Box>
+          <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.3)' }} />
+          <Box>Net (USD):&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${legacyActualProfit.Net.toFixed(2)}&nbsp; (Sold − eBay − ADS − TDS − T.Cont)</Box>
+          <Box>Amazon + Tax:&nbsp;&nbsp; ${legacyActualProfit.AmazonWithTax.toFixed(2)}</Box>
+          <Box>Payoneer (INR):&nbsp;&nbsp; ₹{legacyActualProfit.Payoneer.toFixed(2)}&nbsp; (Net × {legacyActualProfit.payoutRate})</Box>
+          <Box>Amazon Spend:&nbsp;&nbsp;&nbsp;&nbsp; ₹{legacyActualProfit.AmazonExpense.toFixed(2)}&nbsp; ((Amazon + Tax) × {legacyActualProfit.spentRate})</Box>
+          <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.3)' }} />
+          <Box sx={{ fontWeight: 700, color: legacyActualProfit.actualProfit < 300 ? '#e57373' : '#81c784' }}>
+            Actual Profit:&nbsp;&nbsp;&nbsp;&nbsp; ₹{legacyActualProfit.actualProfit.toFixed(2)}
+          </Box>
+        </Box>
+      );
+    }
+    return '';
+  })();
   // Separate core fields and custom fields from template columns
   const coreFieldColumns = templateColumns.filter(col => col.type === 'core');
   const customFieldColumns = templateColumns.filter(col => col.type === 'custom');
@@ -1210,18 +1317,18 @@ export default function AsinReviewModal({
                         </Box>
 
                         <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1.5 }}>
-                          {showActualProfit && (
+                          {showProfitChip && (
                             <Tooltip
-                              title={actualProfitTooltipContent}
+                              title={profitTooltipContent}
                               placement="bottom-end"
                               arrow
                               componentsProps={{
-                                tooltip: { sx: { maxWidth: 380, bgcolor: '#1a1a2e', color: '#fff' } },
+                                tooltip: { sx: { maxWidth: 420, bgcolor: '#1a1a2e', color: '#fff' } },
                                 arrow: { sx: { color: '#1a1a2e' } }
                               }}
                             >
                               <Chip
-                                label={`Actual Profit: ₹${actualProfit.actualProfit.toFixed(2)}`}
+                                label={`Actual Profit: ₹${(displayProfitInr ?? 0).toFixed(2)}`}
                                 size="small"
                                 variant="outlined"
                                 color={actualProfitColor}

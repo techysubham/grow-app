@@ -43,7 +43,6 @@ router.get('/', requireAuth, async (req, res) => {
         spentRate: null,
         payoutRate: null,
         desiredProfit: null,
-        fixedFee: 0,
         saleTax: 0,
         ebayFee: 12.9,
         adsFee: 3,
