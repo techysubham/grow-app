@@ -8412,6 +8412,8 @@ router.post('/sync-listings', requireAuth, async (req, res) => {
 const SYNC_ALL_SELLERS_LOCK_ID = 'sync_all_sellers_listings';
 const SYNC_ALL_SELLERS_STATUS_ID = 'singleton';
 const SYNC_ALL_SELLERS_LEASE_MS = 4 * 60 * 60 * 1000;
+/** If status says "running" but Mongo status cache was not updated this long, treat as dead worker. */
+const SYNC_ALL_STATUS_STALE_MS = 45 * 60 * 1000;
 
 let syncAllStatus = {
   running: false,
@@ -8441,7 +8443,7 @@ async function persistSyncAllStatusToDb() {
   }
 }
 
-async function acquireSyncAllSellersLock() {
+async function tryAcquireSyncAllSellersLockOnce() {
   const now = new Date();
   const holder = `${RUNNER_ID}:${process.pid}`;
   const leaseUntil = new Date(Date.now() + SYNC_ALL_SELLERS_LEASE_MS);
@@ -8465,6 +8467,65 @@ async function acquireSyncAllSellersLock() {
   }
 }
 
+/**
+ * Clear Mongo lock when a previous run died after persisting "not running", or when
+ * status shows running but nothing has heartbeated to Mongo for a long time (zombie).
+ */
+async function recoverStaleSyncAllLockIfNeeded() {
+  try {
+    const lock = await SyncAllSellersLock.findById(SYNC_ALL_SELLERS_LOCK_ID).lean();
+    if (!lock?.leaseUntil) return;
+    const leaseEnd = new Date(lock.leaseUntil);
+    if (leaseEnd.getTime() <= Date.now()) return;
+
+    const row = await SyncAllSellersStatusCache.findById(SYNC_ALL_SELLERS_STATUS_ID).lean();
+    const payload = row?.payload && typeof row.payload === 'object' ? row.payload : null;
+    const updatedAt = row?.updatedAt ? new Date(row.updatedAt) : null;
+
+    if (payload && payload.running === false) {
+      console.warn('[Sync All] Clearing orphan Mongo lock (cached job is not running)');
+      await releaseSyncAllSellersLock();
+      return;
+    }
+
+    if (payload?.running === true && updatedAt) {
+      const age = Date.now() - updatedAt.getTime();
+      if (age > SYNC_ALL_STATUS_STALE_MS) {
+        console.warn('[Sync All] Clearing zombie Mongo lock (status stale, age ms):', age);
+        await releaseSyncAllSellersLock();
+        syncAllStatus.running = false;
+        syncAllStatus.currentSeller = '';
+        syncAllStatus.completedAt = new Date().toISOString();
+        await persistSyncAllStatusToDb();
+      }
+    }
+  } catch (e) {
+    console.error('[Sync All] recoverStaleSyncAllLockIfNeeded:', e?.message || e);
+  }
+}
+
+async function acquireSyncAllSellersLock() {
+  if (await tryAcquireSyncAllSellersLockOnce()) return true;
+  await recoverStaleSyncAllLockIfNeeded();
+  return tryAcquireSyncAllSellersLockOnce();
+}
+
+/** Extend lease while a long sync runs so the lock does not expire mid-job. */
+async function renewSyncAllSellersLock() {
+  const leaseUntil = new Date(Date.now() + SYNC_ALL_SELLERS_LEASE_MS);
+  try {
+    await SyncAllSellersLock.findOneAndUpdate(
+      {
+        _id: SYNC_ALL_SELLERS_LOCK_ID,
+        leaseUntil: { $gt: new Date(0) },
+      },
+      { $set: { leaseUntil } }
+    );
+  } catch (e) {
+    console.error('[Sync All] renew lock failed:', e?.message || e);
+  }
+}
+
 async function releaseSyncAllSellersLock() {
   try {
     await SyncAllSellersLock.findByIdAndUpdate(
@@ -8483,7 +8544,7 @@ router.post('/sync-all-sellers-listings', requireAuth, async (req, res) => {
     return res.status(409).json({
       success: false,
       message:
-        'Sync already in progress on another worker or this server. Try again shortly or poll GET /ebay/sync-all-sellers-status.',
+        'A sync is already running, or the last run left a lock. Wait a moment and try again; stale locks clear automatically. Poll GET /ebay/sync-all-sellers-status for progress.',
     });
   }
   try {
@@ -9637,6 +9698,31 @@ router.get('/all-store-listings', requireAuth, async (req, res) => {
 
     const activeSellers = await getSellersMatchingAllRoute(req);
     const activeSellerIds = activeSellers.map((s) => s._id);
+    if (activeSellerIds.length === 0) {
+      return res.json({
+        listings: [],
+        sourceCollection: 'ActiveListing+Listing',
+        sorting: {
+          sortBy: resolvedSortField,
+          sortOrder: resolvedSortOrder === 1 ? 'asc' : 'desc',
+        },
+        summary: {
+          totalAmount: 0,
+          totalQuantity: 0,
+          totalSoldQuantity: 0,
+          totalViews30d: 0,
+          totalWatchers: 0,
+          promotedCount: 0,
+          inventoryValue: 0,
+          uniqueStoreCount: 0,
+        },
+        pagination: {
+          total: 0,
+          page: pageNum,
+          pages: 0,
+        },
+      });
+    }
     // Match both ObjectId and legacy string `seller` values in Listing / ActiveListing.
     const sellerInMatchList = [...new Set(activeSellerIds.flatMap((id) => [id, String(id)]))];
     const sellerNameById = new Map(
@@ -13746,6 +13832,7 @@ async function executeSyncAllSellersWork() {
   const VALID_MOTORS_CATEGORIES = ["eBay Motors", "Parts & Accessories", "Automotive Tools", "Tools & Supplies"];
   try {
     for (const seller of allSellers) {
+      await renewSyncAllSellersLock();
       const sellerName = seller.user?.username || seller.user?.email || seller._id;
       syncAllStatus.currentSeller = sellerName;
       syncAllStatus.currentPage = 0;
