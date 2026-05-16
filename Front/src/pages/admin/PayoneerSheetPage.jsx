@@ -1216,12 +1216,34 @@ const PayoneerSheetPage = () => {
                     </Stack>
                 </Box>
             ) : (
-                // DESKTOP TABLE VIEW — scroll body only; TOTAL row fixed below (no sticky overlap)
-                <Paper sx={{ width: '100%', alignSelf: 'flex-start', flexShrink: 0, overflow: 'hidden' }}>
+                // DESKTOP TABLE VIEW — scroll body only; TOTAL below Paper (not clipped)
+                <Box
+                    sx={{
+                        width: '100%',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        flex: visibleRows.length > PAYONEER_TABLE_VISIBLE_ROWS ? '1 1 0' : '0 0 auto',
+                        minHeight: 0,
+                    }}
+                >
+                <Paper
+                    sx={{
+                        width: '100%',
+                        flex: visibleRows.length > PAYONEER_TABLE_VISIBLE_ROWS ? '1 1 0' : '0 0 auto',
+                        minHeight: 0,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
+                    }}
+                >
                     <TableContainer
                         sx={{
-                            height: tableBodyScrollHeight,
+                            flex: visibleRows.length > PAYONEER_TABLE_VISIBLE_ROWS ? '1 1 0' : '0 0 auto',
+                            ...(visibleRows.length <= PAYONEER_TABLE_VISIBLE_ROWS && {
+                                height: tableBodyScrollHeight,
+                            }),
                             maxHeight: PAYONEER_TABLE_BODY_MAX_HEIGHT,
+                            minHeight: 0,
                             overflow: 'auto',
                         }}
                     >
@@ -1418,58 +1440,63 @@ const PayoneerSheetPage = () => {
                         </TableBody>
                     </Table>
                     </TableContainer>
-                    {mergedRows.length > 0 && (
-                        <Table
-                            size="small"
-                            sx={{
-                                tableLayout: 'fixed',
-                                width: '100%',
-                                borderTop: 1,
-                                borderColor: 'divider',
-                            }}
-                        >
-                            <colgroup>
-                                <col style={{ width: '11%' }} />
-                                <col style={{ width: '10%' }} />
-                                <col style={{ width: '8%' }} />
-                                <col style={{ width: '8%' }} />
-                                <col style={{ width: '8%' }} />
-                                <col style={{ width: '9%' }} />
-                                <col style={{ width: '9%' }} />
-                                <col style={{ width: '11%' }} />
-                                <col style={{ width: '14%' }} />
-                                <col style={{ width: '12%' }} />
-                            </colgroup>
-                            <TableFooter>
-                                <TableRow
-                                    sx={{
-                                        '& td': {
-                                            bgcolor: 'action.hover',
-                                            fontWeight: 700,
-                                            borderBottom: 'none',
-                                        },
-                                    }}
-                                >
-                                    <TableCell colSpan={3}>TOTAL</TableCell>
-                                    <TableCell>
-                                        <Tooltip title="All rows (includes unsaved eBay payouts)">
-                                            <span>{formatUsd(totals.amountUSD)}</span>
-                                        </Tooltip>
-                                    </TableCell>
-                                    <TableCell colSpan={2} sx={{ color: 'text.secondary' }}>
-                                        —
-                                    </TableCell>
-                                    <TableCell>
-                                        <Tooltip title="Saved Payoneer rows only (Save row lines excluded until saved)">
-                                            <span>{formatInr(totals.bankDepositINR, 2)}</span>
-                                        </Tooltip>
-                                    </TableCell>
-                                    <TableCell colSpan={3} />
-                                </TableRow>
-                            </TableFooter>
-                        </Table>
-                    )}
                 </Paper>
+                {mergedRows.length > 0 && (
+                    <Table
+                        size="small"
+                        component={Paper}
+                        square
+                        sx={{
+                            tableLayout: 'fixed',
+                            width: '100%',
+                            flexShrink: 0,
+                            borderTop: 1,
+                            borderColor: 'divider',
+                            borderRadius: '0 0 4px 4px',
+                        }}
+                    >
+                        <colgroup>
+                            <col style={{ width: '11%' }} />
+                            <col style={{ width: '10%' }} />
+                            <col style={{ width: '8%' }} />
+                            <col style={{ width: '8%' }} />
+                            <col style={{ width: '8%' }} />
+                            <col style={{ width: '9%' }} />
+                            <col style={{ width: '9%' }} />
+                            <col style={{ width: '11%' }} />
+                            <col style={{ width: '14%' }} />
+                            <col style={{ width: '12%' }} />
+                        </colgroup>
+                        <TableFooter>
+                            <TableRow
+                                sx={{
+                                    '& td': {
+                                        bgcolor: 'action.hover',
+                                        fontWeight: 700,
+                                        borderBottom: 'none',
+                                    },
+                                }}
+                            >
+                                <TableCell colSpan={3}>TOTAL</TableCell>
+                                <TableCell>
+                                    <Tooltip title="All rows (includes unsaved eBay payouts)">
+                                        <span>{formatUsd(totals.amountUSD)}</span>
+                                    </Tooltip>
+                                </TableCell>
+                                <TableCell colSpan={2} sx={{ color: 'text.secondary' }}>
+                                    —
+                                </TableCell>
+                                <TableCell>
+                                    <Tooltip title="Saved Payoneer rows only (Save row lines excluded until saved)">
+                                        <span>{formatInr(totals.bankDepositINR, 2)}</span>
+                                    </Tooltip>
+                                </TableCell>
+                                <TableCell colSpan={3} />
+                            </TableRow>
+                        </TableFooter>
+                    </Table>
+                )}
+                </Box>
             )}
 
             {/* PAGINATION */}

@@ -754,7 +754,7 @@ const TransactionPage = () => {
                 )}
             </Box>
 
-            {/* DESKTOP TABLE VIEW — body scroll only; page total fixed below (no overlap) */}
+            {/* DESKTOP TABLE VIEW — body scroll only; page total below (never clipped by Paper) */}
             <Box
                 sx={{
                     display: { xs: 'none', md: 'flex' },
@@ -764,11 +764,24 @@ const TransactionPage = () => {
                     overflow: 'hidden',
                 }}
             >
-                <Paper sx={{ width: '100%', flexShrink: 0, overflow: 'hidden' }}>
+                <Paper
+                    sx={{
+                        width: '100%',
+                        flex: transactions.length > TXN_TABLE_VISIBLE_ROWS ? '1 1 0' : '0 0 auto',
+                        minHeight: 0,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
+                    }}
+                >
                     <TableContainer
                         sx={{
-                            height: tableBodyScrollHeight,
+                            flex: transactions.length > TXN_TABLE_VISIBLE_ROWS ? '1 1 0' : '0 0 auto',
+                            ...(transactions.length <= TXN_TABLE_VISIBLE_ROWS && {
+                                height: tableBodyScrollHeight,
+                            }),
                             maxHeight: TXN_TABLE_BODY_MAX_HEIGHT,
+                            minHeight: 0,
                             overflow: 'auto',
                         }}
                     >
@@ -871,57 +884,61 @@ const TransactionPage = () => {
                     </TableBody>
                         </Table>
                     </TableContainer>
-                    {transactions.length > 0 && (
-                        <Table
-                            size="small"
-                            sx={{
-                                tableLayout: 'fixed',
-                                width: '100%',
-                                borderTop: 1,
-                                borderColor: 'divider',
-                            }}
-                        >
-                            <colgroup>
-                                <col style={{ width: '10%' }} />
-                                <col style={{ width: '14%' }} />
-                                <col style={{ width: '7%' }} />
-                                <col style={{ width: '9%' }} />
-                                <col style={{ width: '22%' }} />
-                                <col style={{ width: '10%' }} />
-                                <col style={{ width: '12%' }} />
-                                <col style={{ width: '16%' }} />
-                            </colgroup>
-                            <TableFooter>
-                                <TableRow
-                                    sx={{
-                                        '& td': {
-                                            bgcolor: '#fafafa',
-                                            fontWeight: 700,
-                                            borderBottom: 'none',
-                                        },
-                                    }}
-                                >
-                                    <TableCell colSpan={6} align="right">
-                                        Page Total:
-                                    </TableCell>
-                                    <TableCell align="right">
-                                        <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'success.main', display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
-                                            <span>+</span> <span>₹{pageTotals.credit.toFixed(2)}</span>
-                                        </Typography>
-                                        <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'error.main', display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
-                                            <span>-</span> <span>₹{pageTotals.debit.toFixed(2)}</span>
-                                        </Typography>
-                                        <Divider sx={{ my: 0.5 }} />
-                                        <Typography variant="body2" sx={{ fontWeight: 'bold', display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
-                                            <span>=</span> <span>₹{pageTotals.net.toFixed(2)}</span>
-                                        </Typography>
-                                    </TableCell>
-                                    <TableCell />
-                                </TableRow>
-                            </TableFooter>
-                        </Table>
-                    )}
                 </Paper>
+                {transactions.length > 0 && (
+                    <Table
+                        size="small"
+                        component={Paper}
+                        square
+                        sx={{
+                            tableLayout: 'fixed',
+                            width: '100%',
+                            flexShrink: 0,
+                            borderTop: 1,
+                            borderColor: 'divider',
+                            borderRadius: '0 0 4px 4px',
+                        }}
+                    >
+                        <colgroup>
+                            <col style={{ width: '10%' }} />
+                            <col style={{ width: '14%' }} />
+                            <col style={{ width: '7%' }} />
+                            <col style={{ width: '9%' }} />
+                            <col style={{ width: '22%' }} />
+                            <col style={{ width: '10%' }} />
+                            <col style={{ width: '12%' }} />
+                            <col style={{ width: '16%' }} />
+                        </colgroup>
+                        <TableFooter>
+                            <TableRow
+                                sx={{
+                                    '& td': {
+                                        bgcolor: '#fafafa',
+                                        fontWeight: 700,
+                                        borderBottom: 'none',
+                                    },
+                                }}
+                            >
+                                <TableCell colSpan={6} align="right">
+                                    Page Total:
+                                </TableCell>
+                                <TableCell align="right">
+                                    <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'success.main', display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
+                                        <span>+</span> <span>₹{pageTotals.credit.toFixed(2)}</span>
+                                    </Typography>
+                                    <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'error.main', display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
+                                        <span>-</span> <span>₹{pageTotals.debit.toFixed(2)}</span>
+                                    </Typography>
+                                    <Divider sx={{ my: 0.5 }} />
+                                    <Typography variant="body2" sx={{ fontWeight: 'bold', display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
+                                        <span>=</span> <span>₹{pageTotals.net.toFixed(2)}</span>
+                                    </Typography>
+                                </TableCell>
+                                <TableCell />
+                            </TableRow>
+                        </TableFooter>
+                    </Table>
+                )}
 
                 <TablePagination
                     component="div"
