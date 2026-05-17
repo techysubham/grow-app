@@ -47,6 +47,16 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import api from '../../lib/api';
 import { bankAccountMenuLabel } from '../../lib/bankAccountLabel.js';
 
+function formatBalance(value) {
+    if (value == null || !Number.isFinite(value)) return '—';
+    return `₹${value.toFixed(2)}`;
+}
+
+function balanceColor(value) {
+    if (value == null || !Number.isFinite(value)) return 'text.secondary';
+    return value >= 0 ? 'success.main' : 'error.main';
+}
+
 // Mobile Transaction Card Component
 const MobileTransactionCard = ({ txn, onEdit, onDelete }) => {
     const dateStr = txn.date ? new Date(txn.date).toLocaleDateString() : '-';
@@ -80,6 +90,15 @@ const MobileTransactionCard = ({ txn, onEdit, onDelete }) => {
                         {txn.transactionType === 'Credit' ? '+' : '-'} ₹{Number.isFinite(txn.amount) ? txn.amount.toFixed(2) : (txn.amount ?? '-')}
                     </Typography>
                 </Stack>
+
+                <Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
+                        Balance
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontWeight: 700, color: balanceColor(txn.balance) }}>
+                        {formatBalance(txn.balance)}
+                    </Typography>
+                </Box>
 
                 <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="center">
                     <Chip
@@ -754,6 +773,7 @@ const TransactionPage = () => {
                             <TableCell>Remark</TableCell>
                             <TableCell>Source</TableCell>
                             <TableCell align="right">Amount</TableCell>
+                            <TableCell align="right">Balance</TableCell>
                             <TableCell align="right">Actions</TableCell>
                         </TableRow>
                     </TableHead>
@@ -801,6 +821,12 @@ const TransactionPage = () => {
                                 <TableCell align="right" sx={{ fontWeight: 'bold', color: txn.transactionType === 'Credit' ? 'success.main' : 'error.main' }}>
                                     {txn.transactionType === 'Credit' ? '+' : '-'} ₹{txn.amount?.toFixed(2)}
                                 </TableCell>
+                                <TableCell
+                                    align="right"
+                                    sx={{ fontWeight: 600, color: balanceColor(txn.balance) }}
+                                >
+                                    {formatBalance(txn.balance)}
+                                </TableCell>
                                 <TableCell align="right">
                                     {(txn.source === 'MANUAL' || txn.source === 'PAYONEER') && (
                                         <>
@@ -835,11 +861,12 @@ const TransactionPage = () => {
                                     </Typography>
                                 </TableCell>
                                 <TableCell />
+                                <TableCell />
                             </TableRow>
                         )}
                         {transactions.length === 0 && (
                             <TableRow>
-                                <TableCell colSpan={8} align="center">No transactions found.</TableCell>
+                                <TableCell colSpan={9} align="center">No transactions found.</TableCell>
                             </TableRow>
                         )}
                     </TableBody>

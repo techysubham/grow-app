@@ -71,6 +71,70 @@ function parseTransactionFilters(query) {
     return { mongoQuery, sortQuery };
 }
 
+const SIGNED_AMOUNT_EXPR = {
+    $cond: [
+        { $eq: ['$transactionType', 'Credit'] },
+        '$amount',
+        { $multiply: ['$amount', -1] }
+    ]
+};
+
+/** Running balance per bank account after each transaction (full account history). */
+async function runningBalanceByTransactionId(transactions) {
+    if (!transactions?.length) return new Map();
+
+    const txnIds = [];
+    const accountIds = new Set();
+
+    for (const t of transactions) {
+        const id = t._id || t;
+        const bankAccountId = t.bankAccount?._id || t.bankAccount;
+        if (!bankAccountId) continue;
+        txnIds.push(id instanceof mongoose.Types.ObjectId ? id : new mongoose.Types.ObjectId(String(id)));
+        accountIds.add(
+            bankAccountId instanceof mongoose.Types.ObjectId
+                ? String(bankAccountId)
+                : String(bankAccountId)
+        );
+    }
+
+    if (!txnIds.length || !accountIds.size) return new Map();
+
+    const bankObjectIds = [...accountIds].map((id) => new mongoose.Types.ObjectId(id));
+
+    const rows = await Transaction.aggregate([
+        { $match: { bankAccount: { $in: bankObjectIds } } },
+        { $sort: { date: 1, _id: 1 } },
+        {
+            $setWindowFields: {
+                partitionBy: '$bankAccount',
+                sortBy: { date: 1, _id: 1 },
+                output: {
+                    balance: {
+                        $sum: SIGNED_AMOUNT_EXPR,
+                        window: { documents: ['unbounded', 'current'] }
+                    }
+                }
+            }
+        },
+        { $match: { _id: { $in: txnIds } } },
+        { $project: { _id: 1, balance: 1 } }
+    ]);
+
+    return new Map(
+        rows.map((r) => [String(r._id), Math.round((r.balance || 0) * 100) / 100])
+    );
+}
+
+function attachRunningBalances(transactions, balanceMap) {
+    return transactions.map((t) => {
+        const plain = typeof t.toObject === 'function' ? t.toObject() : { ...t };
+        const key = String(plain._id);
+        plain.balance = balanceMap.has(key) ? balanceMap.get(key) : null;
+        return plain;
+    });
+}
+
 function csvEscape(cell) {
     if (cell === null || cell === undefined) return '';
     const s = String(cell);
@@ -275,9 +339,10 @@ router.get('/', requireAuth, requirePageAccess('Transactions'), async (req, res)
         ]);
 
         const summary = aggregateSum[0] || { totalCredit: 0, totalDebit: 0 };
+        const balanceMap = await runningBalanceByTransactionId(transactions);
 
         res.json({
-            transactions,
+            transactions: attachRunningBalances(transactions, balanceMap),
             totalPages: Math.ceil(totalTransactions / limitNum),
             currentPage: parseInt(page),
             totalTransactions,
@@ -304,7 +369,18 @@ router.get('/export-csv', requireAuth, requirePageAccess('Transactions'), async 
             .sort(sortQuery)
             .lean();
 
-        const header = ['Date', 'Bank Account', 'Type', 'Amount (INR)', 'Remark', 'Source', 'Bank Account/Name'];
+        const balanceMap = await runningBalanceByTransactionId(rows);
+
+        const header = [
+            'Date',
+            'Bank Account',
+            'Type',
+            'Amount (INR)',
+            'Balance (INR)',
+            'Remark',
+            'Source',
+            'Bank Account/Name'
+        ];
         const lines = [header.map(csvEscape).join(',')];
 
         for (const t of rows) {
@@ -313,11 +389,14 @@ router.get('/export-csv', requireAuth, requirePageAccess('Transactions'), async 
             const type = t.transactionType || '';
             const amount =
                 typeof t.amount === 'number' ? t.amount.toFixed(2) : String(t.amount ?? '');
+            const balanceVal = balanceMap.get(String(t._id));
+            const balance =
+                typeof balanceVal === 'number' ? balanceVal.toFixed(2) : '';
             const remark = (t.remark || '').replace(/\r?\n/g, ' ');
             const source =
                 t.source === 'PAYONEER' ? 'payoneer' : t.source === 'MANUAL' ? 'manual' : t.source || '';
             const card = t.creditCardName?.name || '';
-            lines.push([dateStr, bank, type, amount, remark, source, card].map(csvEscape).join(','));
+            lines.push([dateStr, bank, type, amount, balance, remark, source, card].map(csvEscape).join(','));
         }
 
         const csv = `\uFEFF${lines.join('\r\n')}`;
