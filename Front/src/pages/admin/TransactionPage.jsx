@@ -90,7 +90,7 @@ function balanceColor(value) {
 }
 
 // Mobile Transaction Card Component
-const MobileTransactionCard = ({ txn, storesLabel, onEdit, onDelete }) => {
+const MobileTransactionCard = ({ txn, storesLabel, balanceMode, onEdit, onDelete }) => {
     const dateStr = txn.date ? new Date(txn.date).toLocaleDateString() : '-';
 
     return (
@@ -125,7 +125,7 @@ const MobileTransactionCard = ({ txn, storesLabel, onEdit, onDelete }) => {
 
                 <Box>
                     <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
-                        Balance
+                        Balance{balanceMode === 'portfolio' ? ' (all)' : ''}
                     </Typography>
                     <Typography variant="body2" sx={{ fontWeight: 700, color: balanceColor(txn.balance) }}>
                         {formatBalance(txn.balance)}
@@ -223,6 +223,7 @@ const TransactionPage = () => {
     const [filterType, setFilterType] = useState('');
     const [dateSortOrder, setDateSortOrder] = useState('desc');
     const [groupByBank, setGroupByBank] = useState(false);
+    const [balanceMode, setBalanceMode] = useState('ledger');
 
     // Editing state
     const [editingId, setEditingId] = useState(null);
@@ -298,6 +299,7 @@ const TransactionPage = () => {
             const { data } = await api.get('/transactions', { params });
             setTransactions(data.transactions || []);
             setTotalTransactions(data.totalTransactions || 0);
+            setBalanceMode(data.balanceMode === 'portfolio' ? 'portfolio' : 'ledger');
             if (data.summary) {
                 setSummary(data.summary);
             }
@@ -558,8 +560,9 @@ const TransactionPage = () => {
                 <strong>Bank Accounts</strong> with multiple <strong>Stores</strong> selected there.
                 Same name + account number rows are merged for balance; add the account number to tell
                 same-name accounts apart. <strong>Current balance</strong> for every bank is in the
-                summary below. Use <strong>Group by bank</strong> (all accounts) to read the Balance
-                column row by row; otherwise the list sorts by date.
+                summary below. With <strong>all accounts</strong> and <strong>by date</strong>, Balance is the
+                combined total across all banks after each row. Use <strong>Group by bank</strong> for
+                per-account running balance.
             </Alert>
 
             {/* Filters Section */}
@@ -860,6 +863,7 @@ const TransactionPage = () => {
                                 key={txn._id}
                                 txn={txn}
                                 storesLabel={formatStoresOnBank(txn.bankAccount, sellerOptions)}
+                                balanceMode={balanceMode}
                                 onEdit={() => startEdit(txn)}
                                 onDelete={() => handleDelete(txn._id)}
                             />
@@ -905,8 +909,14 @@ const TransactionPage = () => {
                             <TableCell>Source</TableCell>
                             <TableCell align="right">Amount</TableCell>
                             <TableCell align="right">
-                                <Tooltip title="Balance after this row's bank ledger (merged when same name + account #). Sorted by date, not bank.">
-                                    <span>Balance</span>
+                                <Tooltip
+                                    title={
+                                        balanceMode === 'portfolio'
+                                            ? 'Combined balance across all bank accounts after this transaction (follows date order)'
+                                            : 'Balance for this bank account after this transaction'
+                                    }
+                                >
+                                    <span>{balanceMode === 'portfolio' ? 'Balance (all)' : 'Balance'}</span>
                                 </Tooltip>
                             </TableCell>
                             <TableCell align="right">Actions</TableCell>

@@ -156,8 +156,46 @@ const BALANCE_PARTITION_EXPR = {
     }
 };
 
+/** Combined running balance across every bank (for all-accounts list sorted by date). */
+async function runningPortfolioBalanceByTransactionId(transactions) {
+    if (!transactions?.length) return new Map();
+
+    const txnIds = transactions.map((t) => {
+        const id = t._id || t;
+        return id instanceof mongoose.Types.ObjectId ? id : new mongoose.Types.ObjectId(String(id));
+    });
+
+    const windowRows = await Transaction.aggregate([
+        { $addFields: { signedAmount: SIGNED_AMOUNT_EXPR } },
+        { $sort: CHRONO_SORT },
+        {
+            $setWindowFields: {
+                sortBy: CHRONO_SORT,
+                output: {
+                    balance: {
+                        $sum: '$signedAmount',
+                        window: { documents: ['unbounded', 'current'] }
+                    }
+                }
+            }
+        },
+        { $match: { _id: { $in: txnIds } } },
+        { $project: { _id: 1, balance: 1 } }
+    ]);
+
+    return new Map(
+        windowRows.map((r) => [String(r._id), Math.round((r.balance || 0) * 100) / 100])
+    );
+}
+
 /** Running balance per ledger (merged same name + account #); full history. */
-async function runningBalanceByTransactionId(transactions, listQuery = {}) {
+async function runningBalanceByTransactionId(transactions, listQuery = {}, options = {}) {
+    const { groupByBank = false } = options;
+
+    if (!listQuery.bankAccount && !groupByBank) {
+        return runningPortfolioBalanceByTransactionId(transactions);
+    }
+
     if (!transactions?.length) return new Map();
 
     const txnIds = [];
@@ -545,7 +583,8 @@ router.get('/', requireAuth, requirePageAccess('Transactions'), async (req, res)
         ]);
 
         const summary = aggregateSum[0] || { totalCredit: 0, totalDebit: 0 };
-        const balanceMap = await runningBalanceByTransactionId(transactions, rawQuery);
+        const balanceMap = await runningBalanceByTransactionId(transactions, rawQuery, { groupByBank });
+        const balanceMode = !rawQuery.bankAccount && !groupByBank ? 'portfolio' : 'ledger';
 
         res.json({
             transactions: attachRunningBalances(transactions, balanceMap),
@@ -553,7 +592,8 @@ router.get('/', requireAuth, requirePageAccess('Transactions'), async (req, res)
             currentPage: parseInt(page),
             totalTransactions,
             summary,
-            listGroupByBank: Boolean(groupByBank)
+            listGroupByBank: Boolean(groupByBank),
+            balanceMode
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -580,7 +620,7 @@ router.get('/export-csv', requireAuth, requirePageAccess('Transactions'), async 
             groupByBank
         );
 
-        const balanceMap = await runningBalanceByTransactionId(rows, rawQuery);
+        const balanceMap = await runningBalanceByTransactionId(rows, rawQuery, { groupByBank });
 
         const header = [
             'Date',

@@ -4,6 +4,9 @@
 !.env.example
 !.env.test.example
 
+# Local CSV test fixtures (do not commit)
+Back/tools/local-fixtures/
+
 # Dependencies & build output
 node_modules/
 **/node_modules/
