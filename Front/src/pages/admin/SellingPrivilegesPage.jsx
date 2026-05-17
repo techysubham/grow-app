@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
     Box,
     Typography,
@@ -44,6 +44,14 @@ export default function SellingPrivilegesPage() {
             setFilteredData(filtered);
         }
     }, [searchQuery, data]);
+
+    const serialBySellerId = useMemo(() => {
+        const map = new Map();
+        data.forEach((row, index) => {
+            if (row.sellerId != null) map.set(String(row.sellerId), index + 1);
+        });
+        return map;
+    }, [data]);
 
     const fetchData = async () => {
         try {
@@ -127,6 +135,7 @@ export default function SellingPrivilegesPage() {
                     <Table stickyHeader aria-label="selling privileges table">
                         <TableHead>
                             <TableRow>
+                                <TableCell sx={{ width: 48 }} align="center">#</TableCell>
                                 <TableCell>Seller Name</TableCell>
                                 <TableCell align="right">Qty Limit Remaining</TableCell>
                                 <TableCell align="right">Amt Limit Remaining</TableCell>
@@ -136,14 +145,14 @@ export default function SellingPrivilegesPage() {
                         <TableBody>
                             {loading ? (
                                 <TableRow>
-                                    <TableCell colSpan={4} align="center" sx={{ py: 3 }}>
+                                    <TableCell colSpan={5} align="center" sx={{ py: 3 }}>
                                         <CircularProgress />
                                         <Typography variant="body2" sx={{ mt: 1 }}>Loading selling privileges...</Typography>
                                     </TableCell>
                                 </TableRow>
                             ) : filteredData.length === 0 ? (
                                 <TableRow>
-                                    <TableCell colSpan={4} align="center" sx={{ py: 3 }}>
+                                    <TableCell colSpan={5} align="center" sx={{ py: 3 }}>
                                         No data available
                                     </TableCell>
                                 </TableRow>
@@ -153,7 +162,10 @@ export default function SellingPrivilegesPage() {
                                         key={String(row.sellerId)}
                                         sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
                                     >
-                                        <TableCell component="th" scope="row">
+                                        <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 600 }}>
+                                            {serialBySellerId.get(String(row.sellerId)) ?? '—'}
+                                        </TableCell>
+                                        <TableCell>
                                             <Typography variant="body2" sx={{ fontWeight: 600 }}>
                                                 {row.sellerName || 'Unknown store'}
                                             </Typography>

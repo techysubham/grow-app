@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import {
   Alert,
   Box,
@@ -106,6 +106,14 @@ export default function StoresPage() {
   useEffect(() => {
     void loadTemplateGallery();
   }, []);
+
+  const sortedRows = useMemo(
+    () =>
+      [...rows].sort((a, b) =>
+        String(a?.user?.username || '').localeCompare(String(b?.user?.username || ''))
+      ),
+    [rows]
+  );
 
   const openEdit = async (seller) => {
     const { storeTemplateMap: freshMap } = await loadTemplateGallery();
@@ -229,6 +237,7 @@ export default function StoresPage() {
         <Table size="small">
           <TableHead>
             <TableRow>
+              <TableCell sx={{ width: 48 }} align="center">#</TableCell>
               <TableCell>Username</TableCell>
               <TableCell>Email</TableCell>
               <TableCell>Store Active</TableCell>
@@ -238,15 +247,18 @@ export default function StoresPage() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {rows.length === 0 ? (
+            {sortedRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} align="center" sx={{ py: 3 }}>
+                <TableCell colSpan={7} align="center" sx={{ py: 3 }}>
                   {loading ? 'Loading sellers...' : 'No sellers found.'}
                 </TableCell>
               </TableRow>
             ) : (
-              rows.map((seller) => (
+              sortedRows.map((seller, index) => (
                 <TableRow key={seller._id} hover>
+                  <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 600 }}>
+                    {index + 1}
+                  </TableCell>
                   <TableCell>{seller?.user?.username || '-'}</TableCell>
                   <TableCell>{seller?.user?.email || '-'}</TableCell>
                   <TableCell>{seller?.isStoreActive === false ? 'No' : 'Yes'}</TableCell>
