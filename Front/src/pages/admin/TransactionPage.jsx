@@ -220,6 +220,7 @@ const TransactionPage = () => {
     const [filterBankAccount, setFilterBankAccount] = useState('');
     const [filterType, setFilterType] = useState('');
     const [dateSortOrder, setDateSortOrder] = useState('desc');
+    const [listSortMode, setListSortMode] = useState('date');
 
     // Editing state
     const [editingId, setEditingId] = useState(null);
@@ -294,6 +295,7 @@ const TransactionPage = () => {
             const { data } = await api.get('/transactions', { params });
             setTransactions(data.transactions || []);
             setTotalTransactions(data.totalTransactions || 0);
+            setListSortMode(data.listSortMode || (filterBankAccount ? 'date' : 'ledgerDateAsc'));
             if (data.summary) {
                 setSummary(data.summary);
             }
@@ -326,9 +328,12 @@ const TransactionPage = () => {
     };
 
     const handleDateSortToggle = () => {
+        if (listSortMode === 'ledgerDateAsc') return;
         setDateSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
         setPage(0);
     };
+
+    const isLedgerDateAscList = listSortMode === 'ledgerDateAsc';
 
     const handleDownloadCsv = async () => {
         try {
@@ -548,6 +553,14 @@ const TransactionPage = () => {
                 <strong>Bank Accounts</strong> with multiple <strong>Stores</strong> selected there.
                 Same name + account number rows are merged for balance; add the account number to tell
                 same-name accounts apart.
+                {isLedgerDateAscList ? (
+                    <>
+                        {' '}
+                        With <strong>all banks</strong> shown, rows are sorted by bank then{' '}
+                        <strong>oldest date first</strong> so the Balance column reads correctly.
+                        Filter one bank to sort by newest/oldest date.
+                    </>
+                ) : null}
             </Alert>
 
             {/* Filters Section */}
@@ -832,14 +845,20 @@ const TransactionPage = () => {
                 <Table>
                     <TableHead>
                         <TableRow sx={{ bgcolor: '#f5f5f5' }}>
-                            <TableCell sortDirection={dateSortOrder}>
-                                <TableSortLabel
-                                    active
-                                    direction={dateSortOrder}
-                                    onClick={handleDateSortToggle}
-                                >
-                                    Date
-                                </TableSortLabel>
+                            <TableCell sortDirection={isLedgerDateAscList ? 'asc' : dateSortOrder}>
+                                {isLedgerDateAscList ? (
+                                    <Tooltip title="All banks: sorted by bank, then oldest first (for running balance)">
+                                        <span>Date</span>
+                                    </Tooltip>
+                                ) : (
+                                    <TableSortLabel
+                                        active
+                                        direction={dateSortOrder}
+                                        onClick={handleDateSortToggle}
+                                    >
+                                        Date
+                                    </TableSortLabel>
+                                )}
                             </TableCell>
                             <TableCell>Bank Account</TableCell>
                             <TableCell>Send</TableCell>

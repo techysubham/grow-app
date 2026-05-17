@@ -72,10 +72,13 @@ function parseTransactionFilters(query) {
         sortBy === 'date'
             ? { date: normalizedSortOrder, createdAt: normalizedSortOrder, _id: normalizedSortOrder }
             : { date: -1, createdAt: -1, _id: -1 };
-    // All banks: group by account so balance reads per bank; single bank: date only
-    const sortQuery = bankAccount ? dateSort : { bankAccount: 1, ...dateSort };
 
-    return { mongoQuery, sortQuery };
+    return {
+        mongoQuery,
+        sortQuery: dateSort,
+        /** All-banks list: sort by merged ledger + date asc so balance column reads top→bottom. */
+        groupByLedger: !bankAccount
+    };
 }
 
 const CHRONO_SORT = { date: 1, createdAt: 1, _id: 1 };
@@ -223,11 +226,76 @@ function attachRunningBalances(transactions, balanceMap) {
     });
 }
 
-/** CSV: group by ledger label, oldest first — running balance reads naturally top to bottom. */
+function mapAggregateRowToTransaction(row) {
+    const doc = {
+        _id: row._id,
+        date: row.date,
+        transactionType: row.transactionType,
+        amount: row.amount,
+        remark: row.remark,
+        source: row.source,
+        sendEnabled: row.sendEnabled,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        bankAccount: row.ba
+            ? {
+                  _id: row.ba._id,
+                  name: row.ba.name,
+                  accountNumber: row.ba.accountNumber,
+                  ifscCode: row.ba.ifscCode,
+                  sellers: row.ba.sellers
+              }
+            : row.bankAccount,
+        creditCardName: row.cc ? { _id: row.cc._id, name: row.cc.name } : row.creditCardName
+    };
+    doc.toObject = () => ({ ...doc });
+    return doc;
+}
+
+async function findTransactionsPage(query, { sortQuery, skip, limitNum, groupByLedger }) {
+    if (!groupByLedger) {
+        return Transaction.find(query)
+            .populate('bankAccount', 'name accountNumber ifscCode sellers')
+            .populate('creditCardName', 'name')
+            .sort(sortQuery)
+            .skip(skip)
+            .limit(limitNum);
+    }
+
+    const rows = await Transaction.aggregate([
+        { $match: query },
+        {
+            $lookup: {
+                from: 'bankaccounts',
+                localField: 'bankAccount',
+                foreignField: '_id',
+                as: 'ba'
+            }
+        },
+        { $unwind: { path: '$ba', preserveNullAndEmptyArrays: true } },
+        {
+            $lookup: {
+                from: 'creditcardnames',
+                localField: 'creditCardName',
+                foreignField: '_id',
+                as: 'cc'
+            }
+        },
+        { $unwind: { path: '$cc', preserveNullAndEmptyArrays: true } },
+        { $addFields: { ledgerKey: BALANCE_PARTITION_EXPR } },
+        { $sort: { ledgerKey: 1, date: 1, createdAt: 1, _id: 1 } },
+        { $skip: skip },
+        { $limit: limitNum }
+    ]);
+
+    return rows.map(mapAggregateRowToTransaction);
+}
+
+/** CSV: group by ledger, oldest first — running balance reads naturally top to bottom. */
 function sortRowsForCsvExport(rows) {
     return [...rows].sort((a, b) => {
-        const bankCmp = bankAccountDisplayLabel(a.bankAccount).localeCompare(
-            bankAccountDisplayLabel(b.bankAccount)
+        const bankCmp = bankAccountLedgerKey(a.bankAccount).localeCompare(
+            bankAccountLedgerKey(b.bankAccount)
         );
         if (bankCmp !== 0) return bankCmp;
 
@@ -437,19 +505,14 @@ router.get('/', requireAuth, requirePageAccess('Transactions'), async (req, res)
         }
 
         const { page = 1, limit = 50 } = req.query;
-        const { mongoQuery: rawQuery, sortQuery } = parseTransactionFilters(req.query);
+        const { mongoQuery: rawQuery, sortQuery, groupByLedger } = parseTransactionFilters(req.query);
         const query = await applyLedgerExpandedQuery(rawQuery);
 
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const limitNum = parseInt(limit);
 
         const [transactions, totalTransactions, aggregateSum] = await Promise.all([
-            Transaction.find(query)
-                .populate('bankAccount', 'name accountNumber ifscCode sellers')
-                .populate('creditCardName', 'name')
-                .sort(sortQuery)
-                .skip(skip)
-                .limit(limitNum),
+            findTransactionsPage(query, { sortQuery, skip, limitNum, groupByLedger }),
             Transaction.countDocuments(query),
             Transaction.aggregate([
                 { $match: query },
@@ -475,7 +538,8 @@ router.get('/', requireAuth, requirePageAccess('Transactions'), async (req, res)
             totalPages: Math.ceil(totalTransactions / limitNum),
             currentPage: parseInt(page),
             totalTransactions,
-            summary
+            summary,
+            listSortMode: groupByLedger ? 'ledgerDateAsc' : 'date'
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
