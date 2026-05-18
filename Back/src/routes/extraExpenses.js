@@ -1,16 +1,226 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import ExtraExpense from '../models/ExtraExpense.js';
 import { requireAuth, requirePageAccess } from '../middleware/auth.js';
 import { validate } from '../utils/validate.js';
-import { createExtraExpenseSchema } from '../schemas/index.js';
+import { createExtraExpenseSchema, updateExtraExpenseSchema } from '../schemas/index.js';
+import { bankAccountDisplayLabel } from '../utils/bankAccountLedgerKey.js';
 
 const router = express.Router();
 
-// GET /api/extra-expenses - List all
+function escapeCsvCell(value) {
+    const s = value == null ? '' : String(value);
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+}
+
+function startOfMonth(d = new Date()) {
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+
+function startOfYear(d = new Date()) {
+    return new Date(d.getFullYear(), 0, 1);
+}
+
+function buildListFilter(query) {
+    const filter = {};
+    const from = String(query.from || '').trim();
+    const to = String(query.to || '').trim();
+    if (from || to) {
+        filter.date = {};
+        if (from) {
+            const fromDate = new Date(from);
+            if (!Number.isNaN(fromDate.getTime())) {
+                fromDate.setHours(0, 0, 0, 0);
+                filter.date.$gte = fromDate;
+            }
+        }
+        if (to) {
+            const toDate = new Date(to);
+            if (!Number.isNaN(toDate.getTime())) {
+                toDate.setHours(23, 59, 59, 999);
+                filter.date.$lte = toDate;
+            }
+        }
+        if (!Object.keys(filter.date).length) delete filter.date;
+    }
+
+    const paidBy = String(query.paidBy || '').trim();
+    if (paidBy) filter.paidBy = paidBy;
+
+    const category = String(query.category || '').trim();
+    if (category) {
+        if (category === '__uncategorized__') {
+            filter.$or = [{ category: { $exists: false } }, { category: null }, { category: '' }];
+        } else {
+            filter.category = category;
+        }
+    }
+
+    const search = String(query.search || '').trim();
+    if (search) {
+        filter.name = { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    }
+
+    const bankAccount = String(query.bankAccount || '').trim();
+    if (bankAccount) {
+        if (bankAccount === '__none__') {
+            filter.$and = filter.$and || [];
+            filter.$and.push({
+                $or: [{ bankAccount: null }, { bankAccount: { $exists: false } }],
+            });
+        } else if (mongoose.Types.ObjectId.isValid(bankAccount)) {
+            filter.bankAccount = bankAccount;
+        }
+    }
+
+    return filter;
+}
+
+function aggregateByMonth(expenses) {
+    const map = new Map();
+    for (const row of expenses) {
+        const d = row.date ? new Date(row.date) : null;
+        if (!d || Number.isNaN(d.getTime())) continue;
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        const prev = map.get(key) || { month: key, amount: 0, count: 0 };
+        prev.amount += Number(row.amount) || 0;
+        prev.count += 1;
+        map.set(key, prev);
+    }
+    return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
+}
+
+function aggregateByCategory(expenses) {
+    const map = new Map();
+    for (const row of expenses) {
+        const key = String(row.category || '').trim() || 'Uncategorized';
+        const prev = map.get(key) || { category: key, amount: 0, count: 0 };
+        prev.amount += Number(row.amount) || 0;
+        prev.count += 1;
+        map.set(key, prev);
+    }
+    return Array.from(map.values()).sort((a, b) => b.amount - a.amount);
+}
+
+async function periodSummary(startDate) {
+    const agg = await ExtraExpense.aggregate([
+        { $match: { date: { $gte: startDate } } },
+        {
+            $group: {
+                _id: null,
+                total: { $sum: '$amount' },
+                count: { $sum: 1 },
+            },
+        },
+    ]);
+    const row = agg[0] || { total: 0, count: 0 };
+    return {
+        total: Math.round((row.total || 0) * 100) / 100,
+        count: row.count || 0,
+    };
+}
+
+function normalizeExpensePayload(body) {
+    const bankAccountRaw = body.bankAccount;
+    let bankAccount = null;
+    if (bankAccountRaw && String(bankAccountRaw).trim() && mongoose.Types.ObjectId.isValid(bankAccountRaw)) {
+        bankAccount = bankAccountRaw;
+    }
+    return {
+        date: body.date,
+        name: body.name,
+        amount: body.amount,
+        paidBy: body.paidBy,
+        category: String(body.category || '').trim(),
+        remark: String(body.remark || '').trim(),
+        paymentMethod: String(body.paymentMethod || '').trim(),
+        bankAccount,
+    };
+}
+
+// GET /api/extra-expenses — list with filters, summary, charts
 router.get('/', requireAuth, requirePageAccess('ExtraExpenses'), async (req, res) => {
     try {
-        const expenses = await ExtraExpense.find().sort({ date: -1 });
-        res.json(expenses);
+        const filter = buildListFilter(req.query);
+        const expenses = await ExtraExpense.find(filter)
+            .populate('bankAccount', 'name accountNumber')
+            .sort({ date: -1 })
+            .lean();
+
+        const filteredTotal = expenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+        const [monthSummary, yearSummary] = await Promise.all([
+            periodSummary(startOfMonth()),
+            periodSummary(startOfYear()),
+        ]);
+
+        const paidByOptions = await ExtraExpense.distinct('paidBy');
+        const categoryOptions = await ExtraExpense.distinct('category');
+
+        res.json({
+            expenses,
+            summary: {
+                filteredTotal: Math.round(filteredTotal * 100) / 100,
+                filteredCount: expenses.length,
+                monthTotal: monthSummary.total,
+                monthCount: monthSummary.count,
+                yearTotal: yearSummary.total,
+                yearCount: yearSummary.count,
+            },
+            charts: {
+                byMonth: aggregateByMonth(expenses),
+                byCategory: aggregateByCategory(expenses),
+            },
+            filters: {
+                paidByOptions: paidByOptions.filter(Boolean).sort(),
+                categoryOptions: categoryOptions.filter(Boolean).sort(),
+            },
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/extra-expenses/export-csv
+router.get('/export-csv', requireAuth, requirePageAccess('ExtraExpenses'), async (req, res) => {
+    try {
+        const filter = buildListFilter(req.query);
+        const expenses = await ExtraExpense.find(filter)
+            .populate('bankAccount', 'name accountNumber')
+            .sort({ date: -1 })
+            .lean();
+
+        const header = [
+            'Date',
+            'Name',
+            'Category',
+            'Amount (INR)',
+            'Paid By',
+            'Payment Method',
+            'Bank Account',
+            'Remark',
+        ];
+        const lines = [header.join(',')];
+        for (const e of expenses) {
+            const bankLabel = e.bankAccount
+                ? bankAccountDisplayLabel(e.bankAccount)
+                : '';
+            lines.push([
+                e.date ? new Date(e.date).toISOString().slice(0, 10) : '',
+                e.name,
+                e.category || '',
+                Number(e.amount || 0).toFixed(2),
+                e.paidBy,
+                e.paymentMethod || '',
+                bankLabel,
+                e.remark || '',
+            ].map(escapeCsvCell).join(','));
+        }
+
+        const filename = `extra-expenses-${new Date().toISOString().slice(0, 10)}.csv`;
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(`\uFEFF${lines.join('\n')}`);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -19,14 +229,14 @@ router.get('/', requireAuth, requirePageAccess('ExtraExpenses'), async (req, res
 // POST /api/extra-expenses - Create
 router.post('/', requireAuth, requirePageAccess('ExtraExpenses'), validate(createExtraExpenseSchema), async (req, res) => {
     try {
-        const { date, name, amount, paidBy } = req.body;
-
-        if (!date || !name || !amount || !paidBy) {
+        const payload = normalizeExpensePayload(req.body);
+        if (!payload.date || !payload.name || payload.amount == null || !payload.paidBy) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        const expense = new ExtraExpense({ date, name, amount, paidBy });
+        const expense = new ExtraExpense(payload);
         await expense.save();
+        await expense.populate('bankAccount', 'name accountNumber');
         res.status(201).json(expense);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -34,20 +244,27 @@ router.post('/', requireAuth, requirePageAccess('ExtraExpenses'), validate(creat
 });
 
 // PUT /api/extra-expenses/:id - Update
-router.put('/:id', requireAuth, requirePageAccess('ExtraExpenses'), async (req, res) => {
+router.put('/:id', requireAuth, requirePageAccess('ExtraExpenses'), validate(updateExtraExpenseSchema), async (req, res) => {
     try {
         const { id } = req.params;
-        const { date, name, amount, paidBy } = req.body;
-
         const expense = await ExtraExpense.findById(id);
         if (!expense) return res.status(404).json({ error: 'Expense not found' });
 
-        if (date) expense.date = date;
-        if (name) expense.name = name;
-        if (amount !== undefined) expense.amount = amount;
-        if (paidBy) expense.paidBy = paidBy;
+        if (req.body.date !== undefined) expense.date = req.body.date;
+        if (req.body.name !== undefined) expense.name = req.body.name;
+        if (req.body.amount !== undefined) expense.amount = req.body.amount;
+        if (req.body.paidBy !== undefined) expense.paidBy = req.body.paidBy;
+        if (req.body.category !== undefined) expense.category = String(req.body.category || '').trim();
+        if (req.body.remark !== undefined) expense.remark = String(req.body.remark || '').trim();
+        if (req.body.paymentMethod !== undefined) expense.paymentMethod = String(req.body.paymentMethod || '').trim();
+        if (req.body.bankAccount !== undefined) {
+            const raw = req.body.bankAccount;
+            expense.bankAccount =
+                raw && String(raw).trim() && mongoose.Types.ObjectId.isValid(raw) ? raw : null;
+        }
 
         await expense.save();
+        await expense.populate('bankAccount', 'name accountNumber');
         res.json(expense);
     } catch (err) {
         res.status(500).json({ error: err.message });

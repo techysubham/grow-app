@@ -118,12 +118,20 @@ export const createTransactionSchema = z.object({
 
 export const updateTransactionSchema = createTransactionSchema.partial();
 
-export const createExtraExpenseSchema = z.object({
+const extraExpenseFields = {
   date: z.string().min(1, 'Date is required'),
   name: z.string().min(1, 'Name is required'),
   amount: z.coerce.number({ invalid_type_error: 'Amount must be a number' }),
   paidBy: z.string().min(1, 'paidBy is required'),
-});
+  category: z.string().optional(),
+  remark: z.string().optional(),
+  paymentMethod: z.string().optional(),
+  bankAccount: z.string().optional().nullable(),
+};
+
+export const createExtraExpenseSchema = z.object(extraExpenseFields);
+
+export const updateExtraExpenseSchema = z.object(extraExpenseFields).partial();
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
 

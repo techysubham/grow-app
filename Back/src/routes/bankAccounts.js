@@ -9,7 +9,7 @@ const router = express.Router();
 
 // GET /api/bank-accounts - List all
 // Accessible from both BankAccounts page and Transactions page (for dropdown)
-router.get('/', requireAuth, requirePageAccess(['BankAccounts', 'Transactions','Payoneer']), async (req, res) => {
+router.get('/', requireAuth, requirePageAccess(['BankAccounts', 'Transactions', 'Payoneer', 'ExtraExpenses']), async (req, res) => {
     try {
         const accounts = await BankAccount.find().sort({ name: 1, createdAt: 1 }).lean();
         const countAgg = await PayoneerRecord.aggregate([
