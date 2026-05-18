@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Alert,
   Box,
   Button,
   Checkbox,
   CircularProgress,
-  Dialog,
-  DialogContent,
-  DialogTitle,
   FormControl,
   FormControlLabel,
   Grid,
@@ -35,33 +33,8 @@ import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import api from '../../lib/api';
 
-/** Overlay Negotiation eligible rows with data already shown on Store Listings (same listingId ↔ itemId). */
-function mergeEligibleItemsWithStoreRows(eligibleItems, storeRows) {
-  const byItemId = new Map();
-  for (const r of storeRows || []) {
-    const id = r?.itemId != null ? String(r.itemId).trim() : '';
-    if (id) byItemId.set(id, r);
-  }
-  return eligibleItems.map((item) => {
-    const lid = item?.listingId != null ? String(item.listingId).trim() : '';
-    const row = lid ? byItemId.get(lid) : null;
-    if (!row) return item;
-
-    return {
-      ...item,
-      title: row.title ?? item.title,
-      imageUrl: row.mainImageUrl ?? item.imageUrl,
-      price: typeof row.currentPrice === 'number' ? row.currentPrice : item.price,
-      currency: row.currency ?? item.currency,
-      soldQuantity: typeof row.soldQuantity === 'number' ? row.soldQuantity : item.soldQuantity,
-      startTime: row.startTime ?? item.startTime,
-      timeLeft: (typeof row.timeLeft === 'string' && row.timeLeft) ? row.timeLeft : item.timeLeft,
-      storeName: item.storeName || row.sellerName || item.sellerUsername,
-    };
-  });
-}
-
 export default function StoreListingsPage() {
+  const navigate = useNavigate();
   const ALL_COLUMNS = [
     { key: 'actions', label: 'Actions' },
     { key: 'item', label: 'Item' },
@@ -86,12 +59,6 @@ export default function StoreListingsPage() {
   const [syncing, setSyncing] = useState(false);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'info' });
   const syncPollRef = useRef(null);
-  const [sendingOfferEligible, setSendingOfferEligible] = useState(false);
-  const [eligibleDialogOpen, setEligibleDialogOpen] = useState(false);
-  const [eligibleItems, setEligibleItems] = useState([]);
-  const [eligibleSummary, setEligibleSummary] = useState({ stores: 0, totalItems: 0, failedStores: 0 });
-  const [eligibleError, setEligibleError] = useState('');
-  const [eligibleMarketplace, setEligibleMarketplace] = useState('EBAY_US');
   const [search, setSearch] = useState('');
   const [stores, setStores] = useState([]);
   const [selectedSellerId, setSelectedSellerId] = useState('');
@@ -268,36 +235,11 @@ export default function StoreListingsPage() {
     }
   };
 
-  const handleSendOfferEligible = async () => {
-    setEligibleDialogOpen(true);
-    setSendingOfferEligible(true);
-    setEligibleError('');
-    setEligibleItems([]);
-    setEligibleSummary({ stores: 0, totalItems: 0, failedStores: 0 });
-    setEligibleMarketplace('EBAY_US');
-    try {
-      const { data } = await api.get('/ebay/negotiation/eligible-items', {
-        params: {
-          sellerId: selectedSellerId || undefined,
-          limit: 200,
-          offset: 0,
-        },
-      });
-      const rawItems = Array.isArray(data?.items) ? data.items : [];
-      setEligibleItems(mergeEligibleItemsWithStoreRows(rawItems, rows));
-      setEligibleSummary({
-        stores: Number(data?.summary?.stores || 0),
-        totalItems: Number(data?.summary?.totalItems || 0),
-        failedStores: Number(data?.summary?.failedStores || 0),
-      });
-      setEligibleMarketplace(String(data?.request?.marketplace || data?.filters?.marketplaceId || 'EBAY_US'));
-    } catch (error) {
-      console.error('Failed to fetch eligible offers:', error);
-      const message = error?.response?.data?.error || 'Failed to fetch eligible listings';
-      setEligibleError(message);
-    } finally {
-      setSendingOfferEligible(false);
-    }
+  const openSendOfferEligible = () => {
+    const params = new URLSearchParams();
+    if (selectedSellerId) params.set('sellerId', selectedSellerId);
+    const qs = params.toString();
+    navigate(qs ? `/admin/send-offer-eligible?${qs}` : '/admin/send-offer-eligible');
   };
 
   const formatPrice = (value, currency) => {
@@ -534,12 +476,8 @@ export default function StoreListingsPage() {
         <Button variant="contained" startIcon={<RefreshIcon />} onClick={handleSyncAllStores} disabled={syncing}>
           {syncing ? 'Syncing...' : 'Sync All Stores'}
         </Button>
-        <Button
-          variant="outlined"
-          onClick={handleSendOfferEligible}
-          disabled={sendingOfferEligible}
-        >
-          {sendingOfferEligible ? 'Fetching...' : 'Send Offer Eligible'}
+        <Button variant="outlined" onClick={openSendOfferEligible}>
+          Send Offer Eligible
         </Button>
         <Button variant="outlined" onClick={(e) => setCustomizeAnchorEl(e.currentTarget)}>
           Customize Table
@@ -750,97 +688,6 @@ export default function StoreListingsPage() {
           rowsPerPageOptions={[25, 50, 100]}
         />
       </Paper>
-
-      <Dialog
-        open={eligibleDialogOpen}
-        onClose={() => setEligibleDialogOpen(false)}
-        fullWidth
-        maxWidth="lg"
-      >
-        <DialogTitle>
-          Send Offer Eligible Listings
-        </DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" sx={{ mb: 1.5 }}>
-            Stores: {eligibleSummary.stores} | Eligible listings: {eligibleSummary.totalItems} | Failed stores: {eligibleSummary.failedStores} | Marketplace: {eligibleMarketplace}
-          </Typography>
-          {eligibleError ? <Alert severity="error" sx={{ mb: 1.5 }}>{eligibleError}</Alert> : null}
-          {sendingOfferEligible ? (
-            <Box sx={{ py: 4, display: 'flex', justifyContent: 'center' }}>
-              <CircularProgress size={26} />
-            </Box>
-          ) : (
-            <TableContainer component={Paper} variant="outlined">
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Store</TableCell>
-                    <TableCell>Listing ID</TableCell>
-                    <TableCell>Marketplace</TableCell>
-                    <TableCell>Title</TableCell>
-                    <TableCell>Price</TableCell>
-                    <TableCell>Sold qty</TableCell>
-                    <TableCell>Start date</TableCell>
-                    <TableCell>Time left</TableCell>
-                    <TableCell>Action</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {eligibleItems.map((item, idx) => (
-                    <TableRow key={`${item.sellerId || 'store'}-${item.listingId || idx}`}>
-                      <TableCell>{item.storeName || item.sellerUsername || '-'}</TableCell>
-                      <TableCell>{item.listingId || '-'}</TableCell>
-                      <TableCell>{item.marketplaceId || eligibleMarketplace || '-'}</TableCell>
-                      <TableCell>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', maxWidth: 360 }}>
-                          <Box
-                            component="img"
-                            src={item.imageUrl || 'https://via.placeholder.com/48?text=No+Img'}
-                            alt={item.title || 'listing'}
-                            sx={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 1, border: '1px solid #eee', flexShrink: 0 }}
-                          />
-                          <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.25 }}>
-                            {item.title || '-'}
-                          </Typography>
-                        </Box>
-                      </TableCell>
-                      <TableCell>
-                        {typeof item.price === 'number'
-                          ? formatPrice(item.price, item.currency)
-                          : (item.listingPrice != null ? `${item.listingCurrency || ''} ${item.listingPrice}`.trim() : '-')}
-                      </TableCell>
-                      <TableCell>
-                        {item.soldQuantity != null ? Number(item.soldQuantity) : '-'}
-                      </TableCell>
-                      <TableCell sx={{ whiteSpace: 'pre-line' }}>{formatDateTime(item.startTime)}</TableCell>
-                      <TableCell sx={{ color: '#d32f2f', fontWeight: 600 }}>{item.timeLeft ? formatTimeLeft(item.timeLeft) : '-'}</TableCell>
-                      <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          component="a"
-                          href={item.listingId ? `https://www.ebay.com/itm/${item.listingId}` : '#'}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          disabled={!item.listingId}
-                          sx={{ textTransform: 'none' }}
-                        >
-                          View listing
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {!eligibleItems.length && (
-                    <TableRow>
-                      <TableCell colSpan={9} align="center">No eligible listings found.</TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          )}
-        </DialogContent>
-      </Dialog>
 
       <Snackbar
         open={snackbar.open}

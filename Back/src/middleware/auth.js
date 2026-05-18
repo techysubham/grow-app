@@ -6,6 +6,7 @@ import User from '../models/User.js';
 export const PAGE_DEFAULT_ROLES = {
   // Store Listings
   'StoreListings': ['superadmin', 'listingadmin'],
+  'SendOfferEligible': ['superadmin', 'listingadmin'],
 
   // Order Fulfilment
   'OrdersDashboard': ['superadmin', 'fulfillmentadmin', 'hoc', 'compliancemanager'],

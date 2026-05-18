@@ -88,6 +88,7 @@ import SellingPrivilegesPage from '../pages/admin/SellingPrivilegesPage.jsx';
 import EbayApiUsagePage from '../pages/admin/EbayApiUsagePage.jsx';
 import EbayApiTesterPage from '../pages/admin/EbayApiTesterPage.jsx';
 import StoreListingsPage from '../pages/admin/StoreListingsPage.jsx';
+import SendOfferEligiblePage from '../pages/admin/SendOfferEligiblePage.jsx';
 import FeedUploadStatsPage from '../pages/admin/FeedUploadStatsPage.jsx';
 import SalaryPage from '../pages/admin/SalaryPage.jsx';
 import SellerFundsPage from '../pages/admin/SellerFundsPage.jsx';
@@ -254,6 +255,7 @@ const flyoutMenuSx = {
 // Component map for routing
 const COMPONENT_MAP = {
   'StoreListings': StoreListingsPage,
+  'SendOfferEligible': SendOfferEligiblePage,
   'OrdersDashboard': OrdersDepartmentDashboardPage,
   'OrderAnalytics': OrderAnalyticsPage,
   'MicroOrders': MicroOrdersPage,

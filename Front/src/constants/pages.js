@@ -42,6 +42,7 @@ export const SUBMENUS = {
 export const PAGE_REGISTRY = [
   // ====== STORE LISTINGS ======
   { id: 'StoreListings', name: 'Store Listings', path: '/store-listings', category: 'storeListings', defaultRoles: ['superadmin', 'listingadmin'] },
+  { id: 'SendOfferEligible', name: 'Send Offer Eligible', path: '/send-offer-eligible', category: 'storeListings', defaultRoles: ['superadmin', 'listingadmin'] },
 
   // ====== ORDER FULFILMENT ======
   { id: 'OrdersDashboard', name: 'Orders Dashboard', path: '/orders-dashboard', category: 'orderFulfilment', defaultRoles: ['superadmin', 'fulfillmentadmin', 'hoc', 'compliancemanager'] },
