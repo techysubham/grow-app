@@ -5,7 +5,7 @@ const PriceChangeLogSchema = new mongoose.Schema(
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     seller: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller', required: true },
     order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
-    legacyItemId: { type: String, required: true, index: true },
+    legacyItemId: { type: String, required: true },
     orderId: { type: String },
     productTitle: { type: String },
     originalPrice: { type: Number, required: true },

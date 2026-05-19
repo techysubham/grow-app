@@ -56,6 +56,7 @@ const PAYMENT_METHODS = ['Cash', 'UPI', 'Card', 'Bank Transfer', 'Payoneer', 'Ot
 
 const CHART_COLORS = ['#1976d2', '#ed6c02', '#2e7d32', '#9c27b0', '#d32f2f', '#0288d1', '#6d4c41', '#455a64'];
 const EMPTY_FILTERS = {
+    date: '',
     from: '',
     to: '',
     paidBy: '',
@@ -283,6 +284,7 @@ const ExtraExpensePage = () => {
 
     const queryParams = useMemo(() => {
         const p = {};
+        if (filters.date) p.date = filters.date;
         if (filters.from) p.from = filters.from;
         if (filters.to) p.to = filters.to;
         if (filters.paidBy) p.paidBy = filters.paidBy;
@@ -409,7 +411,7 @@ const ExtraExpensePage = () => {
     };
 
     const hasActiveFilters = Boolean(
-        filters.from || filters.to || filters.paidBy || filters.category || filters.search.trim()
+        filters.date || filters.from || filters.to || filters.paidBy || filters.category || filters.search.trim()
     );
 
     const listTotal = useMemo(
@@ -518,6 +520,17 @@ const ExtraExpensePage = () => {
             <Paper sx={{ p: 2, borderRadius: 2, mb: 2 }}>
                 <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.5 }}>Filters</Typography>
                 <Grid container spacing={1.5}>
+                    <Grid item xs={12} sm={6} md={2}>
+                        <TextField
+                            label="Date"
+                            type="date"
+                            size="small"
+                            fullWidth
+                            InputLabelProps={{ shrink: true }}
+                            value={filters.date}
+                            onChange={(e) => setFilters((f) => ({ ...f, date: e.target.value }))}
+                        />
+                    </Grid>
                     <Grid item xs={12} sm={6} md={2}>
                         <TextField
                             label="From"

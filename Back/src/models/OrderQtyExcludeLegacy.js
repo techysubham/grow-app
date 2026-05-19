@@ -7,6 +7,4 @@ const OrderQtyExcludeLegacySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-OrderQtyExcludeLegacySchema.index({ legacyItemId: 1 });
-
 export default mongoose.model('OrderQtyExcludeLegacy', OrderQtyExcludeLegacySchema);

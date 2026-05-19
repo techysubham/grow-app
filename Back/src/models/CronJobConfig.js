@@ -12,6 +12,4 @@ const CronJobConfigSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-CronJobConfigSchema.index({ jobKey: 1 });
-
 export default mongoose.model('CronJobConfig', CronJobConfigSchema);
