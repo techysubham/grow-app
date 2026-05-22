@@ -10199,7 +10199,8 @@ router.get('/all-store-listings', requireAuth, async (req, res) => {
       },
     ];
 
-    const [facetRow] = await ActiveListing.aggregate([
+    const [facetRow] = await ActiveListing.aggregate(
+      [
       ...mergeStages,
       {
         $facet: {
@@ -10258,7 +10259,9 @@ router.get('/all-store-listings', requireAuth, async (req, res) => {
           meta: [{ $count: 'total' }],
         },
       },
-    ]);
+      ],
+      { allowDiskUse: true },
+    );
 
     const totalDocs = facetRow?.meta[0]?.total || 0;
     const listings = facetRow?.data || [];
