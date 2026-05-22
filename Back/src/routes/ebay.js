@@ -38,6 +38,9 @@ import UserDailyQuantity from '../models/UserDailyQuantity.js';
 import CompatibilityBatchLog from '../models/CompatibilityBatchLog.js';
 import User from '../models/User.js';
 import { getSellersMatchingAllRoute, resolveStoreDisplayName } from '../utils/sellersAllScope.js';
+import { activeListingStatusFilter, sellerIdsInMatch } from '../utils/storeListingsQuery.js';
+
+const ORG_WIDE_SELLER_ROLES = new Set(['superadmin', 'listingadmin']);
 import ItemCategoryMap from '../models/ItemCategoryMap.js';
 import AutoCompatibilityBatch from '../models/AutoCompatibilityBatch.js';
 import AutoCompatibilityBatchItem from '../models/AutoCompatibilityBatchItem.js';
@@ -10075,8 +10078,19 @@ router.get('/all-store-listings', requireAuth, async (req, res) => {
     const limitNum = parseInt(limit, 10);
     const skip = (pageNum - 1) * limitNum;
 
-    const activeSellers = await getSellersMatchingAllRoute(req);
-    const activeSellerIds = activeSellers.map((s) => s._id);
+    let activeSellers = await getSellersMatchingAllRoute(req);
+    let activeSellerIds = activeSellers.map((s) => s._id);
+    // Live DBs may have listings for token-connected stores while user-scope returns none.
+    if (activeSellerIds.length === 0 && ORG_WIDE_SELLER_ROLES.has(req.user?.role)) {
+      activeSellers = await Seller.find({
+        isStoreActive: { $ne: false },
+        'ebayTokens.access_token': { $exists: true },
+      })
+        .select('_id user')
+        .populate('user', 'username email active')
+        .lean();
+      activeSellerIds = activeSellers.map((s) => s._id);
+    }
     if (activeSellerIds.length === 0) {
       return res.json({
         listings: [],
@@ -10102,14 +10116,13 @@ router.get('/all-store-listings', requireAuth, async (req, res) => {
         },
       });
     }
-    // Match both ObjectId and legacy string `seller` values in Listing / ActiveListing.
-    const sellerInMatchList = [...new Set(activeSellerIds.flatMap((id) => [id, String(id)]))];
+    const sellerInMatchList = sellerIdsInMatch(activeSellerIds).$in;
     const sellerNameById = new Map(
       activeSellers.map((s) => [String(s._id), s?.user?.username || String(s._id)])
     );
 
     let query = {
-      listingStatus: 'Active',
+      ...activeListingStatusFilter(),
       seller: { $in: sellerInMatchList },
     };
 
@@ -14379,7 +14392,7 @@ async function executeSyncAllSellersWork() {
             `;
           const response = await axios.post('https://api.ebay.com/ws/api.dll', xmlRequest, {
             headers: {
-              'X-EBAY-API-SITEID': '100',
+              'X-EBAY-API-SITEID': '0',
               'X-EBAY-API-COMPATIBILITY-LEVEL': '1423',
               'X-EBAY-API-CALL-NAME': 'GetSellerList',
               'Content-Type': 'text/xml'
@@ -14398,7 +14411,6 @@ async function executeSyncAllSellersWork() {
             if (status !== 'Active') continue;
             const categoryName = item.PrimaryCategory?.[0]?.CategoryName?.[0] || '';
             const isMotorsItem = VALID_MOTORS_CATEGORIES.some(keyword => categoryName.includes(keyword));
-            if (!isMotorsItem) { skippedCount++; continue; }
             const rawHtml = item.Description ? item.Description[0] : '';
             const cleanHtml = extractCleanDescription(rawHtml);
             const promotedStatusRaw =
@@ -14434,26 +14446,7 @@ async function executeSyncAllSellersWork() {
                 }))
               }));
             }
-            await Listing.findOneAndUpdate(
-              { itemId: item.ItemID[0] },
-              {
-                seller: seller._id,
-                title: item.Title[0],
-                sku: item.SKU ? item.SKU[0] : '',
-                currentPrice: parseFloat(item.SellingStatus[0].CurrentPrice[0]._),
-                currency: item.SellingStatus[0].CurrentPrice[0].$.currencyID,
-                listingStatus: status,
-                mainImageUrl: item.PictureDetails?.[0]?.PictureURL?.[0] || '',
-                categoryName: categoryName,
-                descriptionPreview: cleanHtml,
-                compatibility: parsedCompatibility,
-                startTime: item.ListingDetails?.[0]?.StartTime?.[0]
-              },
-              { upsert: true }
-            );
-
-            // Also keep the all-store listing dataset updated so Store Listings
-            // shows Qty/Sold/Watchers/Time Left immediately after "Sync All Stores".
+            // Store Listings: all active items (any category).
             await ActiveListing.findOneAndUpdate(
               { itemId: item.ItemID[0] },
               {
@@ -14478,6 +14471,29 @@ async function executeSyncAllSellersWork() {
               },
               { upsert: true }
             );
+
+            // Compatibility dashboard: Motors categories only.
+            if (isMotorsItem) {
+              await Listing.findOneAndUpdate(
+                { itemId: item.ItemID[0] },
+                {
+                  seller: seller._id,
+                  title: item.Title[0],
+                  sku: item.SKU ? item.SKU[0] : '',
+                  currentPrice: parseFloat(item.SellingStatus[0].CurrentPrice[0]._),
+                  currency: item.SellingStatus[0].CurrentPrice[0].$.currencyID,
+                  listingStatus: status,
+                  mainImageUrl: item.PictureDetails?.[0]?.PictureURL?.[0] || '',
+                  categoryName: categoryName,
+                  descriptionPreview: cleanHtml,
+                  compatibility: parsedCompatibility,
+                  startTime: item.ListingDetails?.[0]?.StartTime?.[0]
+                },
+                { upsert: true }
+              );
+            } else {
+              skippedCount++;
+            }
             processedCount++;
           }
           page++;

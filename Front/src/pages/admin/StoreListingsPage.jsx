@@ -130,6 +130,12 @@ export default function StoreListingsPage() {
       });
     } catch (error) {
       console.error('Failed to load store listings:', error);
+      const msg =
+        error?.response?.data?.error
+        || error?.response?.data?.message
+        || error?.message
+        || 'Failed to load store listings';
+      setSnackbar({ open: true, message: msg, severity: 'error' });
       setRows([]);
       setTotal(0);
       setSummary({
