@@ -217,7 +217,7 @@ export default function PricingConfigSection({ pricingConfig, onChange }) {
                     {pricingConfig.profitTiers.tiers.map((tier, i) => (
                       <li key={i}>
                         <Typography variant="caption">
-                          ${tier.minCost} - {tier.maxCost !== null ? `$${tier.maxCost}` : '∞'}: {tier.profit} INR
+                          ${tier.minCost} – {tier.maxCost !== null ? `$${tier.maxCost}` : `${tier.minCost}+`}: {tier.profit} INR
                         </Typography>
                       </li>
                     ))}

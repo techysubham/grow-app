@@ -86,6 +86,7 @@ export const createBankAccountSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   accountNumber: z.string().optional(),
   ifscCode: z.string().optional(),
+  payoneerId: z.string().optional(),
   sellers: z.string().optional(),
 });
 

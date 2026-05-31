@@ -557,7 +557,7 @@ router.get('/dashboard/monthly-delta', requireAuth, requirePageAccess('OrdersDas
   try {
     const month = req.query.month || getPtDateString(new Date()).slice(0, 7);
     const previousMonth = getPreviousMonth(month);
-    const { sellerId } = req.query;
+    const { sellerId, marketplace } = req.query;
 
     const currentRange = getMonthUtcRange(month);
     const previousRange = getMonthUtcRange(previousMonth);
@@ -569,6 +569,7 @@ router.get('/dashboard/monthly-delta', requireAuth, requirePageAccess('OrdersDas
         $or: [{ subtotalUSD: { $gte: 3 } }, { subtotal: { $gte: 3 } }]
       }
       : sellerMatch;
+    applyOrderMarketplaceFilter(baseMatch, marketplace);
 
     const [currentRows, previousRows, sellers] = await Promise.all([
       Order.aggregate([
@@ -626,9 +627,11 @@ router.get('/dashboard/monthly-delta', requireAuth, requirePageAccess('OrdersDas
 router.get('/dashboard/overview', requireAuth, requirePageAccess('OrdersDashboard'), async (req, res) => {
   try {
     const date = req.query.date || getPtDateString(new Date());
-    const { sellerId } = req.query;
+    const { sellerId, marketplace } = req.query;
     const { start, end } = getPtDayRange(date);
     const sellerMatch = sellerId ? { seller: new mongoose.Types.ObjectId(sellerId) } : {};
+    const marketplaceClause = {};
+    applyOrderMarketplaceFilter(marketplaceClause, marketplace);
     const lowValueClause = req.query.excludeLowValue === 'true'
       ? { $or: [{ subtotalUSD: { $gte: 3 } }, { subtotal: { $gte: 3 } }] }
       : {};
@@ -641,12 +644,14 @@ router.get('/dashboard/overview', requireAuth, requirePageAccess('OrdersDashboar
 
     const todayOrdersMatch = maybeAnd(
       sellerMatch,
+      marketplaceClause,
       { dateSold: { $gte: start, $lte: end } },
       lowValueClause
     );
 
     const awaitingMatch = maybeAnd(
       sellerMatch,
+      marketplaceClause,
       {
         shipByDate: { $gte: start, $lte: end },
         cancelState: { $in: ['NONE_REQUESTED', 'IN_PROGRESS', null, ''] }
@@ -657,6 +662,7 @@ router.get('/dashboard/overview', requireAuth, requirePageAccess('OrdersDashboar
 
     const arrivalsMatch = maybeAnd(
       sellerMatch,
+      marketplaceClause,
       { arrivingDate: date },
       lowValueClause
     );
@@ -756,8 +762,8 @@ router.get('/dashboard/overview', requireAuth, requirePageAccess('OrdersDashboar
     const currentRange = getMonthUtcRange(month);
     const previousRange = getMonthUtcRange(previousMonth);
     const [currentMonthCount, previousMonthCount] = await Promise.all([
-      Order.countDocuments(maybeAnd(sellerMatch, { dateSold: { $gte: currentRange.start, $lte: currentRange.end } }, lowValueClause)),
-      Order.countDocuments(maybeAnd(sellerMatch, { dateSold: { $gte: previousRange.start, $lte: previousRange.end } }, lowValueClause))
+      Order.countDocuments(maybeAnd(sellerMatch, marketplaceClause, { dateSold: { $gte: currentRange.start, $lte: currentRange.end } }, lowValueClause)),
+      Order.countDocuments(maybeAnd(sellerMatch, marketplaceClause, { dateSold: { $gte: previousRange.start, $lte: previousRange.end } }, lowValueClause))
     ]);
 
     res.json({

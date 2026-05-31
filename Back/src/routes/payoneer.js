@@ -113,7 +113,7 @@ router.get('/', requireAuth, requirePageAccess('Payoneer'), async (req, res) => 
                         select: 'username'
                     }
                 })
-                .populate('bankAccount', 'name')
+                .populate('bankAccount', 'name payoneerId')
                 .sort({ paymentDate: -1 })
                 .skip(skip)
                 .limit(limitNum)
@@ -188,7 +188,7 @@ router.post('/', requireAuth, requirePageAccess('Payoneer'), async (req, res) =>
                     select: 'username'
                 }
             },
-            { path: 'bankAccount', select: 'name' }
+            { path: 'bankAccount', select: 'name payoneerId' }
         ]);
 
         // --- SYNC WITH TRANSACTION ---
@@ -269,7 +269,7 @@ router.put('/:id', requireAuth, requirePageAccess('Payoneer'), async (req, res) 
                     select: 'username'
                 }
             },
-            { path: 'bankAccount', select: 'name' }
+            { path: 'bankAccount', select: 'name payoneerId' }
         ]);
 
         // --- SYNC UPDATE TRANSACTION ---

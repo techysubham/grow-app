@@ -44,7 +44,7 @@ import {
 } from '../../lib/bankAccountSellers.js';
 import { bankAccountMenuLabel, bankAccountListLabelDraft } from '../../lib/bankAccountLabel.js';
 
-const INITIAL_FORM = { name: '', accountNumber: '', ifscCode: '', sellers: '' };
+const INITIAL_FORM = { name: '', accountNumber: '', ifscCode: '', payoneerId: '', sellers: '' };
 
 function sellersFieldToTokens(s) {
     if (s == null || !String(s).trim()) return [];
@@ -258,6 +258,7 @@ const BankAccountsPage = () => {
                             <TableCell>Bank</TableCell>
                             <TableCell>Account Number</TableCell>
                             <TableCell>IFSC Code</TableCell>
+                            <TableCell>Payoneer ID</TableCell>
                             <TableCell>Sellers</TableCell>
                             <TableCell>Payoneer</TableCell>
                             <TableCell align="right">Actions</TableCell>
@@ -269,6 +270,15 @@ const BankAccountsPage = () => {
                                 <TableCell>{bankAccountMenuLabel(acc)}</TableCell>
                                 <TableCell sx={{ fontSize: { xs: '0.85rem', sm: '1rem' } }}>{acc.accountNumber}</TableCell>
                                 <TableCell sx={{ fontSize: { xs: '0.85rem', sm: '1rem' } }}>{acc.ifscCode}</TableCell>
+                                <TableCell
+                                    sx={{
+                                        fontSize: { xs: '0.85rem', sm: '1rem' },
+                                        fontFamily: 'ui-monospace, monospace',
+                                        maxWidth: 160,
+                                    }}
+                                >
+                                    {acc.payoneerId?.trim() || '—'}
+                                </TableCell>
                                 <TableCell sx={{ fontSize: { xs: '0.85rem', sm: '1rem' }, maxWidth: 280 }}>
                                     {formatSellersCell(acc.sellers, sellerOptions)}
                                 </TableCell>
@@ -288,14 +298,14 @@ const BankAccountsPage = () => {
                                     </Button>
                                 </TableCell>
                                 <TableCell align="right">
-                                    <IconButton onClick={() => dialog.openEdit(acc, (a) => ({ name: a.name, accountNumber: a.accountNumber || '', ifscCode: a.ifscCode || '', sellers: a.sellers || '' }))} color="primary" size="small"><EditIcon /></IconButton>
+                                    <IconButton onClick={() => dialog.openEdit(acc, (a) => ({ name: a.name, accountNumber: a.accountNumber || '', ifscCode: a.ifscCode || '', payoneerId: a.payoneerId || '', sellers: a.sellers || '' }))} color="primary" size="small"><EditIcon /></IconButton>
                                     <IconButton onClick={() => handleDelete(acc._id)} color="error" size="small"><DeleteIcon /></IconButton>
                                 </TableCell>
                             </TableRow>
                         ))}
                         {accounts.length === 0 && (
                             <TableRow>
-                                <TableCell colSpan={6} align="center">No accounts found.</TableCell>
+                                <TableCell colSpan={7} align="center">No accounts found.</TableCell>
                             </TableRow>
                         )}
                     </TableBody>
@@ -363,6 +373,15 @@ const BankAccountsPage = () => {
                             onChange={(e) => dialog.setFormData({ ...dialog.formData, ifscCode: e.target.value })}
                             helperText="Optional (India domestic transfers)."
                             placeholder="Optional"
+                        />
+                        <TextField
+                            label="Payoneer ID"
+                            fullWidth
+                            value={dialog.formData.payoneerId}
+                            onChange={(e) => dialog.setFormData({ ...dialog.formData, payoneerId: e.target.value })}
+                            helperText="Optional Payoneer account or payout reference for this bank account."
+                            placeholder="Optional"
+                            inputProps={{ style: { fontFamily: 'ui-monospace, monospace' } }}
                         />
                         <FormControl fullWidth>
                             <InputLabel id="bank-account-stores-label">Stores (Settings → Stores)</InputLabel>

@@ -29,11 +29,11 @@ router.get('/', requireAuth, requirePageAccess(['BankAccounts', 'Transactions', 
 // POST /api/bank-accounts - Create
 router.post('/', requireAuth, requirePageAccess('BankAccounts'), validate(createBankAccountSchema), async (req, res) => {
     try {
-        const { name, accountNumber, ifscCode, sellers } = req.body;
+        const { name, accountNumber, ifscCode, payoneerId, sellers } = req.body;
         if (!name) {
             return res.status(400).json({ error: 'Name is required' });
         }
-        const newAccount = new BankAccount({ name, accountNumber, ifscCode, sellers });
+        const newAccount = new BankAccount({ name, accountNumber, ifscCode, payoneerId, sellers });
         await newAccount.save();
         res.status(201).json(newAccount);
     } catch (err) {
@@ -51,10 +51,10 @@ router.post('/', requireAuth, requirePageAccess('BankAccounts'), validate(create
 router.put('/:id', requireAuth, requirePageAccess('BankAccounts'), async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, accountNumber, ifscCode, sellers } = req.body;
+        const { name, accountNumber, ifscCode, payoneerId, sellers } = req.body;
         const account = await BankAccount.findByIdAndUpdate(
             id,
-            { name, accountNumber, ifscCode, sellers },
+            { name, accountNumber, ifscCode, payoneerId, sellers },
             { new: true }
         );
         res.json(account);

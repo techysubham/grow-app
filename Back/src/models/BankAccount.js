@@ -6,6 +6,7 @@ const BankAccountSchema = new mongoose.Schema(
         name: { type: String, required: true },
         accountNumber: { type: String },
         ifscCode: { type: String },
+        payoneerId: { type: String, trim: true },
         sellers: { type: String } // free text, e.g. seller names (entered manually)
     },
     { timestamps: true }

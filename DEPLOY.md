@@ -59,6 +59,18 @@ Vercel serverless is a poor fit for this Express app as‑is; use **Render Web S
 
   After changing scraper env vars, **Save** and **Manual Deploy** the API service. On startup, logs should show: `[env] ... | gmail=...` and `[Amazon Scraper] Provider: scrapingdog`.
   In the app: **Settings → Scraper Tester** — banner should say `SCRAPER_PROVIDER=scrapingdog` and key length > 0.
+
+  **Gmail Tester** (same Render API — not Vercel): copy from local `Back/.env` or set:
+
+  | Key | Value |
+  | --- | --- |
+  | `GMAIL_IMAP_USER` | Your Gmail address |
+  | `GMAIL_IMAP_APP_PASSWORD` | Google App Password (16 characters) |
+  | `GMAIL_IMPORT_ALLOWED_SENDERS` | `noreply@payoneer.com` |
+  | `GMAIL_IMPORT_ALLOWED_SUBJECTS` | `Automatic withdrawal to your default bank account in process` |
+
+  Optional: `GMAIL_IMPORT_BANK_ACCOUNT_NAME` = exact bank account name in the app. Then **Manual Deploy** again. Live **Gmail Tester** should show a blue IMAP banner, not the orange warning.
+
 5. **eBay RuName** → set **Your auth accepted URL** to:
   `https://YOUR-RENDER-HOST.onrender.com/api/ebay/callback`
 6. Redeploy after changing env vars. Open `https://YOUR-RENDER-HOST.onrender.com/health` — you should see `{"ok":true}`.

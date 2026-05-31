@@ -24,3 +24,12 @@ services:
         sync: false
       - key: SCRAPER_API_KEY
         sync: false
+      # Gmail IMAP (Settings → Gmail Tester, transaction import)
+      - key: GMAIL_IMAP_USER
+        sync: false
+      - key: GMAIL_IMAP_APP_PASSWORD
+        sync: false
+      - key: GMAIL_IMPORT_ALLOWED_SENDERS
+        sync: false
+      - key: GMAIL_IMPORT_ALLOWED_SUBJECTS
+        sync: false

@@ -17,16 +17,14 @@ import {
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import AddIcon from '@mui/icons-material/Add';
+import { DEFAULT_PROFIT_TIERS } from '../constants/pricingDefaults.js';
 
 export default function ProfitTiersSection({ pricingConfig, onChange }) {
   const [mode, setMode] = useState(pricingConfig?.profitTiers?.enabled ? 'tiered' : 'fixed');
   const [tiers, setTiers] = useState(
-    pricingConfig?.profitTiers?.tiers?.length > 0 
-      ? pricingConfig.profitTiers.tiers 
-      : [
-          { minCost: 0, maxCost: 9, profit: 300 },
-          { minCost: 9, maxCost: null, profit: 500 }
-        ]
+    pricingConfig?.profitTiers?.tiers?.length > 0
+      ? pricingConfig.profitTiers.tiers
+      : DEFAULT_PROFIT_TIERS.map((t) => ({ ...t }))
   );
   const [validationError, setValidationError] = useState('');
 
@@ -294,7 +292,10 @@ export default function ProfitTiersSection({ pricingConfig, onChange }) {
                 <li>Each tier applies to products within a specific cost range</li>
                 <li>Ranges must be continuous with no gaps</li>
                 <li>Last tier automatically covers all products above its min cost</li>
-                <li>Example: A $5 product uses Tier 1 profit, a $15 product uses Tier 2 profit</li>
+                <li>
+                  Example: $10 cost → 500 INR; $25 → 900 INR; $50 → 1500 INR (standard tiers:
+                  $0–$20 / $20–$40 / $40+)
+                </li>
               </Box>
             </Typography>
           </Alert>

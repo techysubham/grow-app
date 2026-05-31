@@ -18,6 +18,13 @@
  *         fixedUsd = ebayFixedUsd + transactionContUsd
  */
 
+/** Standard tiered profit (Amazon cost USD → target INR profit). */
+export const DEFAULT_PROFIT_TIERS = [
+  { minCost: 0, maxCost: 20, profit: 500 },
+  { minCost: 20, maxCost: 40, profit: 900 },
+  { minCost: 40, maxCost: null, profit: 1500 },
+];
+
 /**
  * Determine applicable profit based on Amazon cost and tier configuration
  * @param {Number} amazonCost - Product cost in USD
@@ -289,7 +296,7 @@ export function getDefaultPricingConfig() {
     taxRate: 10,
     profitTiers: {
       enabled: false,
-      tiers: []
-    }
+      tiers: DEFAULT_PROFIT_TIERS.map((t) => ({ ...t })),
+    },
   };
 }

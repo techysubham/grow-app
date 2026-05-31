@@ -32,6 +32,16 @@ import OrdersDashboardSkeleton from '../../components/skeletons/OrdersDashboardS
 import { Fade } from '@mui/material';
 
 const DASHBOARD_DATE_KEY = 'orders_dashboard_date';
+const MARKETPLACE_OPTIONS = [
+  { value: '', label: 'All Marketplaces' },
+  { value: 'EBAY_US', label: 'eBay US' },
+  { value: 'EBAY_CA', label: 'eBay CA' },
+  { value: 'EBAY_ENCA', label: 'eBay ENCA' },
+  { value: 'EBAY_GB', label: 'eBay GB' },
+  { value: 'GB', label: 'GB' },
+  { value: 'EBAY_AU', label: 'eBay AU' },
+  { value: 'EBAY_DE', label: 'eBay DE' },
+];
 
 function fmtDateTimePt(value) {
   if (!value) return '-';
@@ -93,6 +103,7 @@ function KpiCard({ title, value, color = 'primary.main', actionTo, actionLabel }
 export default function OrdersDepartmentDashboardPage() {
   const [sellers, setSellers] = useState([]);
   const [selectedSeller, setSelectedSeller] = useState('');
+  const [selectedMarketplace, setSelectedMarketplace] = useState('');
   const [date, setDate] = useState(() => sessionStorage.getItem(DASHBOARD_DATE_KEY) || getTodayPtDateString());
   // Default ON: hide sub-$3 orders; user can turn off for this session
   const [excludeLowValue, setExcludeLowValue] = useState(true);
@@ -119,7 +130,7 @@ export default function OrdersDepartmentDashboardPage() {
   useEffect(() => {
     loadDashboard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date, selectedSeller, excludeLowValue]);
+  }, [date, selectedSeller, selectedMarketplace, excludeLowValue]);
 
   async function loadSellers() {
     try {
@@ -138,12 +149,13 @@ export default function OrdersDepartmentDashboardPage() {
       excludeLowValue: excludeLowValue ? 'true' : 'false'
     };
     if (selectedSeller) params.sellerId = selectedSeller;
+    if (selectedMarketplace) params.marketplace = selectedMarketplace;
 
     const month = String(date || '').slice(0, 7);
     const settled = await Promise.allSettled([
       api.get('/orders/dashboard/overview', { params }),
-      api.get('/orders/dashboard/monthly-delta', { params: { month, sellerId: selectedSeller || undefined, excludeLowValue: excludeLowValue ? 'true' : 'false' } }),
-      api.get('/ebay/stored-orders', { params: { sellerId: selectedSeller || undefined, dateSold: date, page: 1, limit: 25, excludeLowValue: excludeLowValue ? 'true' : 'false' } })
+      api.get('/orders/dashboard/monthly-delta', { params: { month, sellerId: selectedSeller || undefined, marketplace: selectedMarketplace || undefined, excludeLowValue: excludeLowValue ? 'true' : 'false' } }),
+      api.get('/ebay/stored-orders', { params: { sellerId: selectedSeller || undefined, dateSold: date, page: 1, limit: 25, searchMarketplace: selectedMarketplace || undefined, excludeLowValue: excludeLowValue ? 'true' : 'false' } })
     ]);
 
     const nextErrors = [];
@@ -251,6 +263,20 @@ export default function OrdersDepartmentDashboardPage() {
               {sellers.map((s) => (
                 <MenuItem key={s._id} value={s._id}>
                   {s.user?.username || s.user?.email || s._id}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 220 }}>
+            <InputLabel>Marketplace</InputLabel>
+            <Select
+              value={selectedMarketplace}
+              label="Marketplace"
+              onChange={(e) => setSelectedMarketplace(e.target.value)}
+            >
+              {MARKETPLACE_OPTIONS.map((opt) => (
+                <MenuItem key={opt.value || 'all'} value={opt.value}>
+                  {opt.label}
                 </MenuItem>
               ))}
             </Select>

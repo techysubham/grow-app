@@ -194,8 +194,12 @@ export default function ImageOverlaySettingsPage() {
 
       {!imgbbConfigured ? (
         <Alert severity="warning" sx={{ mb: 2 }}>
-          Server <code>IMGBB_API_KEY</code> is not set. Upload overlays here, but watermarking on
-          listings will not run until ImgBB is configured in the API <code>.env</code>.
+          <code>IMGBB_API_KEY</code> is missing on the <strong>API server</strong> (e.g. Render →
+          Environment), not Vercel. Add the key from{' '}
+          <a href="https://api.imgbb.com/" target="_blank" rel="noreferrer">
+            api.imgbb.com
+          </a>
+          , redeploy/restart the API, then refresh this page.
         </Alert>
       ) : null}
 

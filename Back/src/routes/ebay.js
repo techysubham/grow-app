@@ -38,7 +38,11 @@ import UserDailyQuantity from '../models/UserDailyQuantity.js';
 import CompatibilityBatchLog from '../models/CompatibilityBatchLog.js';
 import User from '../models/User.js';
 import { getSellersMatchingAllRoute, resolveStoreDisplayName } from '../utils/sellersAllScope.js';
-import { activeListingStatusFilter, sellerIdsInMatch } from '../utils/storeListingsQuery.js';
+import {
+  activeListingStatusFilter,
+  getSellersForStoreListings,
+  sellerIdsInMatch,
+} from '../utils/storeListingsQuery.js';
 
 const ORG_WIDE_SELLER_ROLES = new Set(['superadmin', 'listingadmin']);
 import ItemCategoryMap from '../models/ItemCategoryMap.js';
@@ -10078,19 +10082,8 @@ router.get('/all-store-listings', requireAuth, async (req, res) => {
     const limitNum = parseInt(limit, 10);
     const skip = (pageNum - 1) * limitNum;
 
-    let activeSellers = await getSellersMatchingAllRoute(req);
-    let activeSellerIds = activeSellers.map((s) => s._id);
-    // Live DBs may have listings for token-connected stores while user-scope returns none.
-    if (activeSellerIds.length === 0 && ORG_WIDE_SELLER_ROLES.has(req.user?.role)) {
-      activeSellers = await Seller.find({
-        isStoreActive: { $ne: false },
-        'ebayTokens.access_token': { $exists: true },
-      })
-        .select('_id user')
-        .populate('user', 'username email active')
-        .lean();
-      activeSellerIds = activeSellers.map((s) => s._id);
-    }
+    const activeSellers = await getSellersForStoreListings(req);
+    const activeSellerIds = activeSellers.map((s) => s._id);
     if (activeSellerIds.length === 0) {
       return res.json({
         listings: [],

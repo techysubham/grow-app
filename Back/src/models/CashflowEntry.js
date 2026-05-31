@@ -9,6 +9,7 @@ const cashflowEntrySchema = new mongoose.Schema(
     taxesAndFees: { type: Number, default: 0 }, // Taxes & Fees
     sellingCosts: { type: Number, default: 0 }, // Selling costs
     net: { type: Number, default: 0 }, // Net (Net sales)
+    payoneerId: { type: String, trim: true }, // Optional Payoneer / eBay payout reference
     notes: { type: String }, // Optional notes
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

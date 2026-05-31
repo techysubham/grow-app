@@ -20,6 +20,7 @@ import FieldConfigList from '../../components/FieldConfigList.jsx';
 import CoreFieldDefaultsForm from '../../components/CoreFieldDefaultsForm.jsx';
 import PricingConfigSection from '../../components/PricingConfigSection.jsx';
 import { createDefaultCoreFieldDefaults } from '../../constants/defaultDescriptionTemplate.js';
+import { DEFAULT_TEMPLATE_PRICING_CONFIG } from '../../constants/pricingDefaults.js';
 
 // ── Marketplace helpers (derived from customActionField) ─────────────────
 function extractMarketplace(customActionField) {
@@ -90,21 +91,6 @@ const DEFAULT_ASIN_FIELD_CONFIGS = [
     defaultValue: ''
   }
 ];
-
-const DEFAULT_TEMPLATE_PRICING_CONFIG = {
-  enabled: true,
-  spentRate: 95,
-  payoutRate: 87,
-  desiredProfit: null,
-  saleTax: 10,
-  ebayFee: 13.95,
-  adsFee: 15,
-  tdsFee: 1,
-  ebayFixedUsd: 0.4,
-  transactionContUsd: 0.24,
-  shippingCost: 0,
-  taxRate: 10
-};
 
 function mergeDefaultCustomColumns(customColumns = []) {
   const incoming = Array.isArray(customColumns) ? customColumns : [];

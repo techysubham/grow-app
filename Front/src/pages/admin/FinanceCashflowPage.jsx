@@ -95,6 +95,7 @@ export default function FinanceCashflowPage() {
     gross: '',
     taxesAndFees: '',
     sellingCosts: '',
+    payoneerId: '',
     notes: ''
   });
   const [formError, setFormError] = useState('');
@@ -173,6 +174,7 @@ export default function FinanceCashflowPage() {
         gross: entry.gross.value.toString(),
         taxesAndFees: entry.taxesAndFees.value.toString(),
         sellingCosts: entry.sellingCosts.value.toString(),
+        payoneerId: entry.payoneerId || '',
         notes: entry.notes || ''
       });
     } else {
@@ -188,6 +190,7 @@ export default function FinanceCashflowPage() {
         gross: '',
         taxesAndFees: '',
         sellingCosts: '',
+        payoneerId: '',
         notes: ''
       });
     }
@@ -229,6 +232,7 @@ export default function FinanceCashflowPage() {
           gross: parseFloat(formData.gross) || 0,
           taxesAndFees: parseFloat(formData.taxesAndFees) || 0,
           sellingCosts: parseFloat(formData.sellingCosts) || 0,
+          payoneerId: formData.payoneerId,
           notes: formData.notes
         });
       } else {
@@ -240,6 +244,7 @@ export default function FinanceCashflowPage() {
           gross: parseFloat(formData.gross) || 0,
           taxesAndFees: parseFloat(formData.taxesAndFees) || 0,
           sellingCosts: parseFloat(formData.sellingCosts) || 0,
+          payoneerId: formData.payoneerId,
           notes: formData.notes
         });
       }
@@ -432,7 +437,7 @@ export default function FinanceCashflowPage() {
     <Box sx={{ pb: 4 }}>
       <Breadcrumbs sx={{ mb: 1.5, fontSize: '0.875rem' }}>
         <Typography color="text.secondary">Finance & Cash Flow</Typography>
-        <Typography color="text.primary" fontWeight={600}></Typography>
+        <Typography color="text.primary" fontWeight={600}>Cashflow</Typography>
       </Breadcrumbs>
 
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
@@ -647,6 +652,7 @@ export default function FinanceCashflowPage() {
                   <TableCell sx={{ fontWeight: 700 }}>Account</TableCell>
                   <TableCell sx={{ fontWeight: 700 }}>Marketplace</TableCell>
                   <TableCell sx={{ fontWeight: 700 }}>Date</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Payoneer ID</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>Gross (Total Sales)</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>Taxes & Fees</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>Selling Costs</TableCell>
@@ -657,7 +663,7 @@ export default function FinanceCashflowPage() {
               <TableBody>
                 {rows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} align="center" sx={{ py: 4 }}>
+                    <TableCell colSpan={9} align="center" sx={{ py: 4 }}>
                       No data available. Click "Add Entry" to create one.
                     </TableCell>
                   </TableRow>
@@ -669,6 +675,7 @@ export default function FinanceCashflowPage() {
                         <TableRow key={item.id} sx={{ bgcolor: 'grey.50', fontWeight: 700 }}>
                           <TableCell sx={{ fontWeight: 700 }}>{seller.sellerName}</TableCell>
                           <TableCell sx={{ fontWeight: 700, color: 'text.secondary' }}>TOTAL</TableCell>
+                          <TableCell></TableCell>
                           <TableCell></TableCell>
                           <TableCell align="right" sx={{ fontWeight: 700 }}>{formatCurrency(seller.gross.value)}</TableCell>
                           <TableCell align="right" sx={{ fontWeight: 700 }}>{formatCurrency(seller.taxesAndFees.value)}</TableCell>
@@ -684,6 +691,9 @@ export default function FinanceCashflowPage() {
                           <TableCell sx={{ pl: 4, color: 'text.secondary', fontSize: '0.9rem' }}>→ {seller.sellerName}</TableCell>
                           <TableCell sx={{ color: 'text.secondary', fontSize: '0.9rem' }}>{mp.marketplace}</TableCell>
                           <TableCell sx={{ fontSize: '0.9rem' }}>{new Date(mp.date).toLocaleDateString()}</TableCell>
+                          <TableCell sx={{ fontSize: '0.85rem', fontFamily: 'ui-monospace, monospace', maxWidth: 140 }}>
+                            {mp.payoneerId || '—'}
+                          </TableCell>
                           <TableCell align="right" sx={{ fontSize: '0.9rem' }}>{formatCurrency(mp.gross.value)}</TableCell>
                           <TableCell align="right" sx={{ fontSize: '0.9rem' }}>{formatCurrency(mp.taxesAndFees.value)}</TableCell>
                           <TableCell align="right" sx={{ fontSize: '0.9rem' }}>{formatCurrency(mp.sellingCosts.value)}</TableCell>
@@ -1212,6 +1222,23 @@ export default function FinanceCashflowPage() {
               sx={{
                 '& .MuiOutlinedInput-input': {
                   color: 'text.primary'
+                },
+                '& label': {
+                  color: 'text.secondary'
+                }
+              }}
+            />
+
+            <TextField
+              label="Payoneer ID"
+              value={formData.payoneerId}
+              onChange={(e) => handleFormChange('payoneerId', e.target.value)}
+              placeholder="Optional payout reference"
+              fullWidth
+              sx={{
+                '& .MuiOutlinedInput-input': {
+                  color: 'text.primary',
+                  fontFamily: 'ui-monospace, monospace',
                 },
                 '& label': {
                   color: 'text.secondary'

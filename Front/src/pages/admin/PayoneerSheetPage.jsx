@@ -57,14 +57,41 @@ const SELECT_MENU_IN_DIALOG = {
     PaperProps: { sx: { maxHeight: 360, zIndex: (theme) => theme.zIndex.modal + 2 } },
 };
 
+function resolveBankPayoneerId(bankAccountRef, bankAccounts) {
+    if (!bankAccountRef) return '';
+    const direct = String(bankAccountRef.payoneerId || '').trim();
+    if (direct) return direct;
+    const id = bankAccountRef._id;
+    if (!id || !bankAccounts?.length) return '';
+    const acc = bankAccounts.find((a) => String(a._id) === String(id));
+    return String(acc?.payoneerId || '').trim();
+}
+
+function PayoneerIdText({ value, variant = 'body2' }) {
+    const text = String(value || '').trim();
+    if (!text) {
+        return (
+            <Typography component="span" variant={variant} color="text.secondary">
+                —
+            </Typography>
+        );
+    }
+    return (
+        <Typography
+            variant={variant}
+            sx={{ wordBreak: 'break-all', fontFamily: 'ui-monospace, monospace' }}
+        >
+            {text}
+        </Typography>
+    );
+}
+
 const EMPTY_PAYONEER_FORM = () => ({
     bankAccount: '',
     paymentDate: getTodayPtDateString(),
     amount: '',
     exchangeRate: '',
     store: '',
-    periodStart: '',
-    periodEnd: '',
     /** Finances payoutId from completed payouts feed / Save row */
     ebayPayoutId: '',
     marketplace: 'ebay'
@@ -154,7 +181,7 @@ function resolvePayoutIdFromFeed(record, lookup) {
 }
 
 // --- MOBILE PAYONEER CARD COMPONENT ---
-function MobilePayoneerCard({ record, isEditing, displayPayoutId, renderCell, onEdit, onDelete, onSave, onCancel }) {
+function MobilePayoneerCard({ record, isEditing, displayPayoutId, displayPayoneerId, renderCell, onEdit, onDelete, onSave, onCancel }) {
     return (
         <Paper elevation={2} sx={{ p: 2, borderRadius: 2 }}>
             <Stack spacing={1.5}>
@@ -260,18 +287,11 @@ function MobilePayoneerCard({ record, isEditing, displayPayoutId, renderCell, on
 
                     <Box>
                         <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem', fontWeight: 'bold' }}>
-                            PERIOD
+                            PAYONEER ID
                         </Typography>
-                        {isEditing ? (
-                            <Stack spacing={0.5} sx={{ mt: 0.5 }}>
-                                <TextField type="date" size="small" label="From" InputLabelProps={{ shrink: true }} value={editFormData?.periodStart || ''} onChange={(e) => handleEditChange('periodStart', e.target.value)} fullWidth />
-                                <TextField type="date" size="small" label="To" InputLabelProps={{ shrink: true }} value={editFormData?.periodEnd || ''} onChange={(e) => handleEditChange('periodEnd', e.target.value)} fullWidth />
-                            </Stack>
-                        ) : (
-                            <Typography variant="body2" sx={{ mt: 0.5 }}>
-                                {record.periodStart ? formatPaymentDateDisplayPt(record.periodStart) : '-'} → {record.periodEnd ? formatPaymentDateDisplayPt(record.periodEnd) : '-'}
-                            </Typography>
-                        )}
+                        <Box sx={{ mt: 0.5 }}>
+                            <PayoneerIdText value={displayPayoneerId} />
+                        </Box>
                     </Box>
 
                     {!isEditing && displayPayoutId && (
@@ -506,7 +526,16 @@ const PayoneerSheetPage = () => {
                     _feedSource: f,
                     _id: `ebay-${f.payoutId}-${f.sellerId}`,
                     bankAccount: f.suggestedBankAccountId
-                        ? { _id: f.suggestedBankAccountId, name: f.suggestedBankName }
+                        ? (() => {
+                              const acc = bankAccounts.find(
+                                  (a) => String(a._id) === String(f.suggestedBankAccountId)
+                              );
+                              return {
+                                  _id: f.suggestedBankAccountId,
+                                  name: f.suggestedBankName || acc?.name,
+                                  payoneerId: acc?.payoneerId || '',
+                              };
+                          })()
                         : null,
                     paymentDate: f.payoutDate,
                     store: { _id: f.sellerId, user: { username: f.sellerName } },
@@ -514,8 +543,6 @@ const PayoneerSheetPage = () => {
                     exchangeRate: null,
                     actualExchangeRate: null,
                     bankDeposit: null,
-                    periodStart: null,
-                    periodEnd: null
                 }))
             : [];
 
@@ -528,7 +555,7 @@ const PayoneerSheetPage = () => {
             return dbn - da;
         });
         return combined;
-    }, [filteredPayoutFeed, records, marketplace]);
+    }, [filteredPayoutFeed, records, marketplace, bankAccounts]);
 
     const mergedTotalPages = Math.max(1, Math.ceil(mergedRows.length / pagination.limit) || 1);
 
@@ -727,10 +754,18 @@ const PayoneerSheetPage = () => {
 
 
 
+    const formPayoneerId = useMemo(() => {
+        if (!formData.bankAccount) return '';
+        const acc = bankAccounts.find((a) => String(a._id) === String(formData.bankAccount));
+        return String(acc?.payoneerId || '').trim();
+    }, [formData.bankAccount, bankAccounts]);
+
     const handleCreate = async () => {
         try {
             setLoading(true);
             const payload = { ...formData };
+            delete payload.periodStart;
+            delete payload.periodEnd;
             if (!payload.ebayPayoutId?.trim()) delete payload.ebayPayoutId;
             if (payload.paymentDate && /^\d{4}-\d{2}-\d{2}$/.test(String(payload.paymentDate).trim())) {
                 payload.paymentDate = ptYyyyMmDdToIsoString(payload.paymentDate.trim());
@@ -768,8 +803,6 @@ const PayoneerSheetPage = () => {
             amount: record.amount,
             exchangeRate: record.exchangeRate,
             store: record.store?._id,
-            periodStart: record.periodStart ? record.periodStart.split('T')[0] : '',
-            periodEnd: record.periodEnd ? record.periodEnd.split('T')[0] : ''
         });
     };
 
@@ -785,6 +818,8 @@ const PayoneerSheetPage = () => {
     const saveEdit = async () => {
         try {
             const payload = { ...editFormData };
+            delete payload.periodStart;
+            delete payload.periodEnd;
             if (payload.paymentDate && /^\d{4}-\d{2}-\d{2}$/.test(String(payload.paymentDate).trim())) {
                 payload.paymentDate = ptYyyyMmDdToIsoString(payload.paymentDate.trim());
             }
@@ -819,7 +854,6 @@ const PayoneerSheetPage = () => {
             if (field === 'exchangeRate') return formatExchangeRateInr(value);
             if (field === 'actualExchangeRate') return formatInr(value, 4);
             if (field === 'paymentDate') return formatPaymentDateDisplayPt(value);
-            if (field === 'periodStart' || field === 'periodEnd') return value ? formatPaymentDateDisplayPt(value) : '-';
             return value;
         }
 
@@ -1218,6 +1252,10 @@ const PayoneerSheetPage = () => {
                                             <Typography variant="body2" color="text.secondary">
                                                 Bank (suggested): {record.bankAccount?.name || '—'}
                                             </Typography>
+                                            <Typography variant="caption" color="text.secondary" display="block">
+                                                Payoneer ID:{' '}
+                                                {resolveBankPayoneerId(record.bankAccount, bankAccounts) || '—'}
+                                            </Typography>
                                             <Typography variant="body2">
                                                 {record.paymentDate ? formatPaymentDateDisplayPt(record.paymentDate) : '—'} ·{' '}
                                                 {formatUsd(record.amount)}{' '}
@@ -1237,6 +1275,14 @@ const PayoneerSheetPage = () => {
                                     record={record}
                                     isEditing={isEditing}
                                     displayPayoutId={resolvePayoutIdFromFeed(record, payoutFeedLookup)}
+                                    displayPayoneerId={resolveBankPayoneerId(
+                                        isEditing
+                                            ? bankAccounts.find(
+                                                  (a) => String(a._id) === String(editFormData.bankAccount)
+                                              ) || record.bankAccount
+                                            : record.bankAccount,
+                                        bankAccounts
+                                    )}
                                     renderCell={renderCell}
                                     onEdit={() => startEditing(record)}
                                     onDelete={() => handleDelete(record._id)}
@@ -1283,7 +1329,7 @@ const PayoneerSheetPage = () => {
                                 <TableCell>Exch. Rate</TableCell>
                                 <TableCell>Actual Rate (+2%)</TableCell>
                                 <TableCell>Bank Deposit (INR)</TableCell>
-                                <TableCell>Period</TableCell>
+                                <TableCell>Payoneer ID</TableCell>
                                 <TableCell>Payout ID</TableCell>
                                 <TableCell align="right">Actions</TableCell>
                             </TableRow>
@@ -1307,7 +1353,12 @@ const PayoneerSheetPage = () => {
                                             <TableCell>—</TableCell>
                                             <TableCell sx={{ color: 'text.secondary' }}>—</TableCell>
                                             <TableCell sx={{ color: 'text.secondary' }}>—</TableCell>
-                                            <TableCell sx={{ color: 'text.secondary' }}>—</TableCell>
+                                            <TableCell>
+                                                <PayoneerIdText
+                                                    value={resolveBankPayoneerId(record.bankAccount, bankAccounts)}
+                                                    variant="caption"
+                                                />
+                                            </TableCell>
                                             <TableCell>
                                                 <Typography variant="caption" sx={{ wordBreak: 'break-all', display: 'block', fontFamily: 'ui-monospace, monospace' }}>
                                                     {f?.payoutId || '—'}
@@ -1345,36 +1396,20 @@ const PayoneerSheetPage = () => {
                                             {isEditing ? 'Auto-calc' : formatInr(record.bankDeposit, 2)}
                                         </TableCell>
 
-                                        {/* Period range */}
+                                        {/* Payoneer ID from linked Bank Account row */}
                                         <TableCell>
-                                            {isEditing ? (
-                                                <Stack spacing={0.5}>
-                                                    <TextField
-                                                        type="date"
-                                                        size="small"
-                                                        label="From"
-                                                        InputLabelProps={{ shrink: true }}
-                                                        value={editFormData.periodStart || ''}
-                                                        onChange={(e) => handleEditChange('periodStart', e.target.value)}
-                                                        sx={{ width: 150 }}
-                                                    />
-                                                    <TextField
-                                                        type="date"
-                                                        size="small"
-                                                        label="To"
-                                                        InputLabelProps={{ shrink: true }}
-                                                        value={editFormData.periodEnd || ''}
-                                                        onChange={(e) => handleEditChange('periodEnd', e.target.value)}
-                                                        sx={{ width: 150 }}
-                                                    />
-                                                </Stack>
-                                            ) : (
-                                                <Typography variant="body2" sx={{ whiteSpace: 'nowrap' }}>
-                                                    {record.periodStart ? formatPaymentDateDisplayPt(record.periodStart) : '-'}
-                                                    {' → '}
-                                                    {record.periodEnd ? formatPaymentDateDisplayPt(record.periodEnd) : '-'}
-                                                </Typography>
-                                            )}
+                                            <PayoneerIdText
+                                                value={resolveBankPayoneerId(
+                                                    isEditing
+                                                        ? bankAccounts.find(
+                                                              (a) =>
+                                                                  String(a._id) ===
+                                                                  String(editFormData.bankAccount)
+                                                          ) || record.bankAccount
+                                                        : record.bankAccount,
+                                                    bankAccounts
+                                                )}
+                                            />
                                         </TableCell>
 
                                         <TableCell>
@@ -1532,6 +1567,21 @@ const PayoneerSheetPage = () => {
                             ))}
                         </TextField>
 
+                        <TextField
+                            label="Payoneer ID"
+                            fullWidth
+                            value={formPayoneerId}
+                            InputProps={{ readOnly: true }}
+                            helperText={
+                                formPayoneerId
+                                    ? 'From the selected bank account (edit on Bank Accounts page).'
+                                    : formData.bankAccount
+                                      ? 'No Payoneer ID on this bank account — set it under Bank Accounts.'
+                                      : 'Select a bank account to show its Payoneer ID.'
+                            }
+                            inputProps={{ style: { fontFamily: 'ui-monospace, monospace' } }}
+                        />
+
                         {/* Store Name Selection — filtered by Sellers field on Bank Accounts when set */}
                         <TextField
                             select
@@ -1620,27 +1670,6 @@ const PayoneerSheetPage = () => {
                                 <Typography variant="body2">Bank Deposit: <b>{preview.bankDeposit?.toFixed(2)}</b></Typography>
                             </Box>
                         </Paper>
-
-                        {/* Period Range */}
-                        <Typography variant="subtitle2" sx={{ mb: -1 }}>Period (optional)</Typography>
-                        <Stack direction={{ xs: 'column', sm: 'row' }} gap={2}>
-                            <TextField
-                                label="From"
-                                type="date"
-                                fullWidth
-                                InputLabelProps={{ shrink: true }}
-                                value={formData.periodStart}
-                                onChange={(e) => setFormData({ ...formData, periodStart: e.target.value })}
-                            />
-                            <TextField
-                                label="To"
-                                type="date"
-                                fullWidth
-                                InputLabelProps={{ shrink: true }}
-                                value={formData.periodEnd}
-                                onChange={(e) => setFormData({ ...formData, periodEnd: e.target.value })}
-                            />
-                        </Stack>
                     </Box>
                 </DialogContent>
                 <DialogActions sx={{ p: { xs: 1, sm: 2 }, gap: 1, flexDirection: { xs: 'column-reverse', sm: 'row' } }}>
