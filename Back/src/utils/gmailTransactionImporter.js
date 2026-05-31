@@ -11,7 +11,51 @@ const PAYONEER_DEPOSIT_REGEX =
   /(?:amount\s+to\s+deposit|deposited\s+to\s+your\s+bank|bank\s+deposit)\D{0,30}(?:inr|rs\.?|₹)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i;
 const PAYONEER_WITHDRAWAL_REGEX =
   /(?:withdrawal\s+amount|amount\s+to\s+withdraw|withdrew)\D{0,30}(?:usd|us\$|\$)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i;
-const BODY_PREVIEW_MAX = 1200;
+/** Payoneer "Automatic withdrawal" table: Amount | $167.01 (not "Amount transferred…") */
+const PAYONEER_AMOUNT_USD_REGEX =
+  /\bAmount\b(?!\s+transferred)\D{0,20}\$?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i;
+const PAYONEER_EXCHANGE_RATE_REGEX =
+  /Exchange\s+Rate\D{0,12}1\s*USD\s*=\s*([0-9][0-9,]*(?:\.[0-9]{1,6})?)\s*INR/i;
+const PAYONEER_BANK_TRANSFER_REGEX =
+  /Amount\s+transferred\s+to\s+bank\s+account\D{0,20}([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*INR/i;
+const PAYONEER_CUSTOMER_ID_REGEX = /(?:Your\s+)?Customer\s+ID\s+is\s*([0-9]+)/i;
+const PAYONEER_GREETING_REGEX = /Dear\s+([^,\n<]+?)\s*,/i;
+
+function extractFromPayoneerHtml(html) {
+  const h = String(html || '');
+  if (!h) return {};
+  const cellValue = (labelPattern) => {
+    const re = new RegExp(
+      `<td[^>]*>\\s*${labelPattern}\\s*</td>\\s*<td[^>]*>\\s*([^<]+)`,
+      'i'
+    );
+    const m = h.match(re);
+    return m ? m[1].replace(/&nbsp;/g, ' ').trim() : null;
+  };
+  const amountUsdRaw = cellValue('Amount(?!\\s+transferred)');
+  const rateRaw = cellValue('Exchange\\s+Rate');
+  const depositRaw = cellValue('Amount\\s+transferred\\s+to\\s+bank\\s+account');
+  let exchangeRate = null;
+  const rateMatch = String(rateRaw || h).match(/1\s*USD\s*=\s*([0-9][0-9,]*(?:\.[0-9]{1,6})?)\s*INR/i);
+  if (rateMatch) exchangeRate = normalizeAmount(rateMatch[1]);
+  const amountUsd = amountUsdRaw ? normalizeAmount(amountUsdRaw.replace(/^\$/, '')) : null;
+  const bankDepositInr = depositRaw
+    ? normalizeAmount(String(depositRaw).replace(/\s*INR\s*$/i, ''))
+    : null;
+  return { amountUsd, exchangeRate, bankDepositInr };
+}
+
+
+function stripHtml(html) {
+  return String(html || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function normalizeAmount(raw) {
   const cleaned = String(raw || '').replace(/,/g, '').trim();
@@ -43,15 +87,48 @@ function normalizeSubjectLine(subject) {
     .toLowerCase();
 }
 
-export function parseFieldsFromMail({ subject = '', text = '', date = null }) {
-  const combined = `${subject}\n${text}`;
+export function parseFieldsFromMail({ subject = '', text = '', html = '', date = null }) {
+  const plainHtml = stripHtml(html);
+  const combined = `${subject}\n${text}\n${plainHtml}`;
+
+  const htmlFields = extractFromPayoneerHtml(html);
+
+  const amountUsdMatch = combined.match(PAYONEER_AMOUNT_USD_REGEX);
+  const exchangeMatch = combined.match(PAYONEER_EXCHANGE_RATE_REGEX);
+  const bankTransferMatch = combined.match(PAYONEER_BANK_TRANSFER_REGEX);
+  const customerIdMatch = combined.match(PAYONEER_CUSTOMER_ID_REGEX);
+  const greetingMatch = combined.match(PAYONEER_GREETING_REGEX);
+
+  const amountUsd =
+    (amountUsdMatch ? normalizeAmount(amountUsdMatch[1]) : null) ?? htmlFields.amountUsd;
+  const exchangeRate =
+    (exchangeMatch ? normalizeAmount(exchangeMatch[1]) : null) ?? htmlFields.exchangeRate;
+  const bankDepositInr =
+    (bankTransferMatch ? normalizeAmount(bankTransferMatch[1]) : null) ?? htmlFields.bankDepositInr;
+  const customerId = customerIdMatch?.[1]?.trim() || '';
+  const greetingName = greetingMatch?.[1]?.replace(/\s+/g, ' ').trim() || '';
+  const greetingLine = greetingName ? `Dear ${greetingName},` : '';
+
   const depositMatch = combined.match(PAYONEER_DEPOSIT_REGEX);
   const withdrawalMatch = combined.match(PAYONEER_WITHDRAWAL_REGEX);
   const genericMatch = combined.match(AMOUNT_REGEX);
-  const amountRaw = depositMatch?.[1] || withdrawalMatch?.[1] || genericMatch?.[1];
-  const amount = amountRaw ? normalizeAmount(amountRaw) : null;
+  const legacyAmountRaw = depositMatch?.[1] || withdrawalMatch?.[1] || genericMatch?.[1];
+  const legacyAmount = legacyAmountRaw ? normalizeAmount(legacyAmountRaw) : null;
+
+  /** Credit on Transactions = INR deposited to bank when present. */
+  const amount = bankDepositInr ?? legacyAmount;
   const parsedDate = parseDateFromText(combined, date || new Date());
-  return { amount, date: parsedDate };
+
+  return {
+    amountUsd,
+    exchangeRate,
+    bankDepositInr,
+    customerId,
+    greetingName,
+    greetingLine,
+    amount,
+    date: parsedDate,
+  };
 }
 
 export function getConfiguredAllowedSenders() {
@@ -141,23 +218,26 @@ export async function resolveBankAccount() {
     if (matches.length > 0) return matches[0];
   }
 
-  const first = await BankAccount.findOne({}).sort({ createdAt: 1 }).select('_id name').lean();
+  const first = await BankAccount.findOne({}).sort({ createdAt: 1 }).select('_id name payoneerId').lean();
   return first || null;
 }
 
-function stripHtml(html) {
-  return String(html || '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+async function loadBankAccountsByPayoneerId() {
+  const rows = await BankAccount.find({ payoneerId: { $exists: true, $ne: '' } })
+    .select('_id name payoneerId')
+    .lean();
+  const map = new Map();
+  for (const row of rows) {
+    const key = String(row.payoneerId || '').trim();
+    if (key) map.set(key, row);
+  }
+  return map;
 }
 
-function bodyPreview(parsed) {
-  const text = String(parsed.text || '').trim() || stripHtml(parsed.html);
-  if (text.length <= BODY_PREVIEW_MAX) return text;
-  return `${text.slice(0, BODY_PREVIEW_MAX)}…`;
+function resolveBankForCustomer(customerId, defaultBank, byPayoneerId) {
+  const key = String(customerId || '').trim();
+  if (key && byPayoneerId?.has(key)) return byPayoneerId.get(key);
+  return defaultBank;
 }
 
 function classifyMessage({ fromText, subject, allowedSenders, allowedSubjects, alreadyProcessed, fields }) {
@@ -174,7 +254,7 @@ function classifyMessage({ fromText, subject, allowedSenders, allowedSubjects, a
     return { status: 'skipped', skipReason: 'Could not parse amount and date' };
   }
   if (!fields.amount) {
-    return { status: 'skipped', skipReason: 'Could not parse amount' };
+    return { status: 'skipped', skipReason: 'Could not parse amount transferred to bank (INR)' };
   }
   if (!fields.date) {
     return { status: 'skipped', skipReason: 'Could not parse date' };
@@ -190,6 +270,138 @@ function normalizePreviewMode(mode) {
   return 'unread';
 }
 
+function escapeGmailRawTerm(s) {
+  return String(s || '')
+    .trim()
+    .replace(/"/g, '\\"');
+}
+
+/** Gmail X-GM-RAW query from env sender/subject filters. */
+function buildGmailRawQuery(allowedSenders, allowedSubjects, mode) {
+  const parts = [];
+  if (mode === 'unread') parts.push('is:unread');
+
+  if (allowedSenders.length > 1) {
+    parts.push(`(${allowedSenders.map((s) => `from:${escapeGmailRawTerm(s)}`).join(' OR ')})`);
+  } else if (allowedSenders.length === 1) {
+    parts.push(`from:${escapeGmailRawTerm(allowedSenders[0])}`);
+  }
+
+  if (allowedSubjects.length > 1) {
+    parts.push(
+      `(${allowedSubjects.map((s) => `subject:"${escapeGmailRawTerm(s)}"`).join(' OR ')})`
+    );
+  } else if (allowedSubjects.length === 1) {
+    parts.push(`subject:"${escapeGmailRawTerm(allowedSubjects[0])}"`);
+  }
+
+  return parts.join(' ').trim();
+}
+
+function buildStandardImapSearch(allowedSenders, allowedSubjects, mode) {
+  const criteria = {};
+  if (mode === 'unread') criteria.seen = false;
+  if (allowedSenders.length === 1) criteria.from = allowedSenders[0];
+  if (allowedSubjects.length === 1) criteria.subject = allowedSubjects[0];
+  return criteria;
+}
+
+function normalizeUidList(raw) {
+  if (Array.isArray(raw)) return raw.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  if (raw && Array.isArray(raw.all)) return raw.all.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  return [];
+}
+
+/** IMAP SEARCH for env-configured Payoneer sender/subject before downloading bodies. */
+async function searchFilteredMessageUids(client, { mode, limit, allowedSenders, allowedSubjects }) {
+  const hasFilter = allowedSenders.length > 0 || allowedSubjects.length > 0;
+  if (!hasFilter) return null;
+
+  let uids = [];
+  const gmraw = buildGmailRawQuery(allowedSenders, allowedSubjects, mode);
+
+  try {
+    if (gmraw) {
+      uids = normalizeUidList(await client.search({ gmraw }, { uid: true }));
+    }
+  } catch {
+    uids = [];
+  }
+
+  if (!uids.length) {
+    const standard = buildStandardImapSearch(allowedSenders, allowedSubjects, mode);
+    if (Object.keys(standard).length > (mode === 'unread' ? 1 : 0) || standard.from || standard.subject) {
+      uids = normalizeUidList(await client.search(standard, { uid: true }));
+    }
+  }
+
+  uids.sort((a, b) => b - a);
+  const matchingInboxTotal = uids.length;
+  const capped = uids.slice(0, Math.max(1, limit));
+
+  return { uids: capped, matchingInboxTotal, imapFiltered: true };
+}
+
+async function processScannedMessage(msg, { allowedSenders, allowedSubjects, bankAccount, bankByPayoneerId }) {
+  const messageId = msg.envelope?.messageId || `uid-${msg.uid}`;
+  const subject = msg.envelope?.subject || '';
+  const fromText = (msg.envelope?.from || [])
+    .map((f) => `${f.name || ''} <${f.address || ''}>`.trim())
+    .join(', ');
+
+  const parsedMail = await simpleParser(msg.source);
+  const bodyText = String(parsedMail.text || '').trim();
+  const bodyHtml = String(parsedMail.html || '').trim();
+  const fields = parseFieldsFromMail({
+    subject: subject || parsedMail.subject || '',
+    text: bodyText,
+    html: bodyHtml,
+    date: parsedMail.date || msg.internalDate || new Date(),
+  });
+
+  const existing = await GmailProcessedMail.findOne({ messageId })
+    .select('_id transactionId parsedAmount parsedDate')
+    .lean();
+
+  const resolvedSubject = subject || parsedMail.subject || '';
+  const importBank = resolveBankForCustomer(fields.customerId, bankAccount, bankByPayoneerId);
+  const { status, skipReason } = classifyMessage({
+    fromText,
+    subject: resolvedSubject,
+    allowedSenders,
+    allowedSubjects,
+    alreadyProcessed: Boolean(existing),
+    fields,
+  });
+
+  return {
+    uid: msg.uid,
+    messageId,
+    from: fromText,
+    subject: resolvedSubject,
+    internalDate: msg.internalDate ? new Date(msg.internalDate).toISOString() : null,
+    seen: Boolean(msg.flags?.has('\\Seen')),
+    senderAllowed: senderAllowed(fromText, allowedSenders),
+    subjectAllowed: subjectAllowed(resolvedSubject, allowedSubjects),
+    alreadyProcessed: Boolean(existing),
+    existingTransactionId: existing?.transactionId ? String(existing.transactionId) : null,
+    parsedAmountUsd: fields.amountUsd,
+    parsedExchangeRate: fields.exchangeRate,
+    parsedBankDepositInr: fields.bankDepositInr,
+    parsedCustomerId: fields.customerId || null,
+    parsedGreetingLine: fields.greetingLine || null,
+    parsedGreetingName: fields.greetingName || null,
+    parsedAmount: fields.amount,
+    parsedDate: fields.date ? new Date(fields.date).toISOString() : null,
+    resolvedBankAccount: importBank
+      ? { id: String(importBank._id), name: importBank.name }
+      : null,
+    status,
+    skipReason,
+    wouldImport: status === 'ready' && Boolean(importBank?._id),
+  };
+}
+
 async function scanGmailMessages({ limit = 25, mode = 'unread' } = {}) {
   const { host, port, secure, user, pass } = getImapConfig();
 
@@ -200,11 +412,16 @@ async function scanGmailMessages({ limit = 25, mode = 'unread' } = {}) {
   const allowedSenders = getConfiguredAllowedSenders();
   const allowedSubjects = getConfiguredAllowedSubjects();
   const bankAccount = await resolveBankAccount();
+  const bankByPayoneerId = await loadBankAccountsByPayoneerId();
   const client = new ImapFlow({ host, port, secure, auth: { user, pass } });
 
   const result = {
     scanned: 0,
     mode,
+    imapFiltered: false,
+    matchingInboxTotal: null,
+    allowedSenders,
+    allowedSubjects,
     bankAccount: bankAccount ? { id: String(bankAccount._id), name: bankAccount.name } : null,
     messages: [],
     errors: [],
@@ -216,6 +433,38 @@ async function scanGmailMessages({ limit = 25, mode = 'unread' } = {}) {
     const total = mailbox.exists || 0;
 
     result.inboxTotal = total;
+
+    const filtered = await searchFilteredMessageUids(client, {
+      mode,
+      limit,
+      allowedSenders,
+      allowedSubjects,
+    });
+
+    const processOpts = { allowedSenders, allowedSubjects, bankAccount, bankByPayoneerId };
+
+    if (filtered) {
+      result.imapFiltered = true;
+      result.matchingInboxTotal = filtered.matchingInboxTotal;
+
+      if (!filtered.uids.length) {
+        return finalizeScanResult(result);
+      }
+
+      for await (const msg of client.fetch(filtered.uids, {
+        envelope: true,
+        source: true,
+        uid: true,
+        internalDate: true,
+        flags: true,
+      }, { uid: true })) {
+        result.scanned += 1;
+        result.messages.push(await processScannedMessage(msg, processOpts));
+      }
+
+      result.messages.sort((a, b) => (b.uid || 0) - (a.uid || 0));
+      return finalizeScanResult(result);
+    }
 
     let fetchQuery;
     let maxToProcess = limit;
@@ -245,53 +494,7 @@ async function scanGmailMessages({ limit = 25, mode = 'unread' } = {}) {
       if ((mode === 'recent' || mode === 'all') && fetched >= maxToProcess) break;
       fetched += 1;
       result.scanned += 1;
-
-      const messageId = msg.envelope?.messageId || `uid-${msg.uid}`;
-      const subject = msg.envelope?.subject || '';
-      const fromText = (msg.envelope?.from || [])
-        .map((f) => `${f.name || ''} <${f.address || ''}>`.trim())
-        .join(', ');
-
-      const parsedMail = await simpleParser(msg.source);
-      const bodyText = parsedMail.text || stripHtml(parsedMail.html) || '';
-      const fields = parseFieldsFromMail({
-        subject: subject || parsedMail.subject || '',
-        text: bodyText,
-        date: parsedMail.date || msg.internalDate || new Date(),
-      });
-
-      const existing = await GmailProcessedMail.findOne({ messageId })
-        .select('_id transactionId parsedAmount parsedDate')
-        .lean();
-
-      const resolvedSubject = subject || parsedMail.subject || '';
-      const { status, skipReason } = classifyMessage({
-        fromText,
-        subject: resolvedSubject,
-        allowedSenders,
-        allowedSubjects,
-        alreadyProcessed: Boolean(existing),
-        fields,
-      });
-
-      result.messages.push({
-        uid: msg.uid,
-        messageId,
-        from: fromText,
-        subject: resolvedSubject,
-        internalDate: msg.internalDate ? new Date(msg.internalDate).toISOString() : null,
-        seen: Boolean(msg.flags?.has('\\Seen')),
-        senderAllowed: senderAllowed(fromText, allowedSenders),
-        subjectAllowed: subjectAllowed(resolvedSubject, allowedSubjects),
-        alreadyProcessed: Boolean(existing),
-        existingTransactionId: existing?.transactionId ? String(existing.transactionId) : null,
-        parsedAmount: fields.amount,
-        parsedDate: fields.date ? new Date(fields.date).toISOString() : null,
-        status,
-        skipReason,
-        wouldImport: status === 'ready' && Boolean(bankAccount?._id),
-        bodyPreview: bodyPreview(parsedMail),
-      });
+      result.messages.push(await processScannedMessage(msg, processOpts));
     }
 
     if (mode === 'recent' || mode === 'all') {
@@ -302,9 +505,12 @@ async function scanGmailMessages({ limit = 25, mode = 'unread' } = {}) {
     await client.logout();
   }
 
+  return finalizeScanResult(result);
+}
+
+function finalizeScanResult(result) {
   result.ready = result.messages.filter((m) => m.status === 'ready').length;
   result.skipped = result.messages.filter((m) => m.status === 'skipped').length;
-
   return result;
 }
 
@@ -345,10 +551,13 @@ export async function importTransactionsFromGmail({ limit = 25 } = {}) {
       continue;
     }
 
+    const targetBankId = row.resolvedBankAccount?.id || bankAccount._id;
+    const targetBankName = row.resolvedBankAccount?.name || bankAccount.name;
+
     try {
       const transaction = await Transaction.create({
         date: new Date(row.parsedDate),
-        bankAccount: bankAccount._id,
+        bankAccount: targetBankId,
         transactionType: 'Credit',
         amount: row.parsedAmount,
         remark: `Gmail import: ${row.subject}`.slice(0, 280),
@@ -361,7 +570,7 @@ export async function importTransactionsFromGmail({ limit = 25 } = {}) {
         subject: row.subject,
         parsedDate: new Date(row.parsedDate),
         parsedAmount: row.parsedAmount,
-        parsedBankAccountName: bankAccount.name,
+        parsedBankAccountName: targetBankName,
         transactionId: transaction._id,
       });
       importResult.imported += 1;

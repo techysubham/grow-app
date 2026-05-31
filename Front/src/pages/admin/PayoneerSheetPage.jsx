@@ -494,8 +494,18 @@ const PayoneerSheetPage = () => {
             setGmailSyncLoading(true);
             const { data } = await api.post('/payoneer/import-gmail', { limit: 50 });
             await fetchRecords();
+            const updatedRows = (data?.messages || [])
+                .filter((m) => m.status === 'updated')
+                .map(
+                    (m) =>
+                        `${m.storeUsername || 'store'} $${m.amountUsd} → ₹${m.bankDepositInr} @ ${m.exchangeRate}`
+                );
+            const detail =
+                updatedRows.length > 0
+                    ? `\n\nUpdated:\n${updatedRows.join('\n')}`
+                    : '';
             alert(
-                `Gmail sync complete. Updated: ${data?.updated || 0}, Matched: ${data?.matched || 0}, Scanned: ${data?.scanned || 0}, Skipped: ${data?.skipped || 0}`
+                `Gmail sync complete. Updated: ${data?.updated || 0}, Matched: ${data?.matched || 0}, Scanned: ${data?.scanned || 0}, Skipped: ${data?.skipped || 0}.${detail}\n\nMatches Payoneer rows by USD amount + store name from email greeting (Dear …,).`
             );
         } catch (error) {
             alert(error.response?.data?.error || 'Failed to sync Gmail data');

@@ -6,6 +6,9 @@ const GmailProcessedPayoneerMailSchema = new mongoose.Schema(
         from: { type: String, default: '' },
         subject: { type: String, default: '' },
         payoutId: { type: String, default: '' },
+        amountUsd: { type: Number },
+        greetingName: { type: String, default: '' },
+        sellerUsername: { type: String, default: '' },
         exchangeRate: { type: Number },
         bankDeposit: { type: Number },
         payoneerRecordId: { type: mongoose.Schema.Types.ObjectId, ref: 'PayoneerRecord' }

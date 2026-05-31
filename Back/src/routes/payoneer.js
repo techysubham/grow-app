@@ -2,7 +2,7 @@ import express from 'express';
 import PayoneerRecord from '../models/PayoneerRecord.js';
 import Transaction from '../models/Transaction.js';
 import { requireAuth, requirePageAccess } from '../middleware/auth.js';
-import { importPayoneerFieldsFromGmail } from '../utils/gmailPayoneerImporter.js';
+import { importPayoneerFieldsFromGmail, applyPayoneerFieldsFromGmailUid } from '../utils/gmailPayoneerImporter.js';
 import { getPTDayBoundsUTC } from '../utils/pacificDayBounds.js';
 
 const router = express.Router();
@@ -132,11 +132,24 @@ router.get('/', requireAuth, requirePageAccess('Payoneer'), async (req, res) => 
     }
 });
 
-// POST /api/payoneer/import-gmail - match payout IDs from Gmail and fill exchange/deposit
+// POST /api/payoneer/import-gmail - match amount + store from Gmail and fill exchange/deposit
 router.post('/import-gmail', requireAuth, requirePageAccess('Payoneer'), async (req, res) => {
     try {
         const limit = Math.max(1, Math.min(100, Number(req.body?.limit || 50)));
-        const report = await importPayoneerFieldsFromGmail({ limit });
+        const preview = Boolean(req.body?.preview);
+        const report = await importPayoneerFieldsFromGmail({ limit, preview });
+        res.json(report);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/payoneer/apply-gmail-message - apply one Gmail UID to Payoneer sheet (Gmail Tester)
+router.post('/apply-gmail-message', requireAuth, requirePageAccess('Payoneer'), async (req, res) => {
+    try {
+        const uid = req.body?.uid;
+        const preview = Boolean(req.body?.preview);
+        const report = await applyPayoneerFieldsFromGmailUid(uid, { preview });
         res.json(report);
     } catch (err) {
         res.status(500).json({ error: err.message });

@@ -5,6 +5,7 @@ import {
   importTransactionsFromGmail,
   previewTransactionsFromGmail,
 } from '../utils/gmailTransactionImporter.js';
+import { applyPayoneerFieldsFromGmailUid } from '../utils/gmailPayoneerImporter.js';
 
 const router = express.Router();
 
@@ -40,6 +41,17 @@ router.post('/import', requireAuth, requirePageAccess('GmailTester'), async (req
   } catch (err) {
     console.error('[GmailTester] import:', err);
     res.status(500).json({ error: err.message || 'Gmail import failed' });
+  }
+});
+
+router.post('/sync-payoneer', requireAuth, requirePageAccess('GmailTester'), async (req, res) => {
+  try {
+    const uid = req.body?.uid;
+    const report = await applyPayoneerFieldsFromGmailUid(uid, { preview: false });
+    res.json(report);
+  } catch (err) {
+    console.error('[GmailTester] sync-payoneer:', err);
+    res.status(500).json({ error: err.message || 'Failed to update Payoneer sheet' });
   }
 });
 

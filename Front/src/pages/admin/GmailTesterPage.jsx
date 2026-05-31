@@ -29,6 +29,7 @@ import {
   Typography,
 } from '@mui/material';
 import api from '../../lib/api.js';
+import { formatYyyyMmDdPt, getTodayPtDateString } from '../../lib/pacificDate.js';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 const PREVIEW_TIMEOUT_MS = 180000;
@@ -50,10 +51,15 @@ function messageMatchesSearch(m, query) {
   const haystack = [
     m.from,
     m.subject,
-    m.bodyPreview,
+    m.parsedGreetingLine,
+    m.parsedGreetingName,
     m.skipReason,
     m.status,
     m.parsedAmount != null ? String(m.parsedAmount) : '',
+    m.parsedAmountUsd != null ? String(m.parsedAmountUsd) : '',
+    m.parsedExchangeRate != null ? String(m.parsedExchangeRate) : '',
+    m.parsedBankDepositInr != null ? String(m.parsedBankDepositInr) : '',
+    m.parsedCustomerId || '',
     m.parsedDate ? new Date(m.parsedDate).toLocaleString() : '',
     m.internalDate ? new Date(m.internalDate).toLocaleString() : '',
     m.seen ? 'read' : 'unread',
@@ -62,6 +68,38 @@ function messageMatchesSearch(m, query) {
     .join(' ')
     .toLowerCase();
   return haystack.includes(q);
+}
+
+function formatExtractedSummary(m) {
+  if (!m) return '';
+  const lines = [];
+  if (m.parsedGreetingLine) lines.push(m.parsedGreetingLine);
+  if (m.parsedAmountUsd != null) lines.push(`Amount: $${m.parsedAmountUsd}`);
+  if (m.parsedExchangeRate != null) lines.push(`Exchange rate: 1 USD = ${m.parsedExchangeRate} INR`);
+  const inr = m.parsedBankDepositInr ?? m.parsedAmount;
+  if (inr != null) lines.push(`Bank deposit: ₹${inr} INR`);
+  if (m.parsedCustomerId) lines.push(`Customer ID: ${m.parsedCustomerId}`);
+  return lines.join('\n');
+}
+
+/** Received date in PT (internalDate), else parsed transaction date. */
+function getMessagePtDateKey(m) {
+  return formatYyyyMmDdPt(m.internalDate || m.parsedDate);
+}
+
+function messageMatchesDateFilter(m, { mode, singleDate, rangeStart, rangeEnd }) {
+  if (mode === 'none') return true;
+  const day = getMessagePtDateKey(m);
+  if (!day) return false;
+  if (mode === 'single') {
+    return Boolean(singleDate) && day === singleDate;
+  }
+  if (mode === 'range') {
+    if (rangeStart && day < rangeStart) return false;
+    if (rangeEnd && day > rangeEnd) return false;
+    return Boolean(rangeStart || rangeEnd);
+  }
+  return true;
 }
 
 function formatWhen(iso) {
@@ -81,6 +119,9 @@ export default function GmailTesterPage() {
   const [mode, setMode] = useState('all');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('payoneer');
+  const [dateFilterMode, setDateFilterMode] = useState('none');
+  const [singleDate, setSingleDate] = useState('');
+  const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
@@ -88,6 +129,7 @@ export default function GmailTesterPage() {
   const [report, setReport] = useState(null);
   const [selectedUid, setSelectedUid] = useState(null);
   const [copyStatus, setCopyStatus] = useState('');
+  const [payoneerSyncLoading, setPayoneerSyncLoading] = useState(false);
 
   const loadStatus = useCallback(async () => {
     setStatusLoading(true);
@@ -114,9 +156,19 @@ export default function GmailTesterPage() {
       if (statusFilter === 'skipped' && m.status !== 'skipped') return false;
       if (statusFilter === 'payoneer' && (!m.senderAllowed || !m.subjectAllowed)) return false;
       if (statusFilter === 'unread' && m.seen) return false;
+      if (
+        !messageMatchesDateFilter(m, {
+          mode: dateFilterMode,
+          singleDate,
+          rangeStart: dateRange.start,
+          rangeEnd: dateRange.end,
+        })
+      ) {
+        return false;
+      }
       return messageMatchesSearch(m, search);
     });
-  }, [report, search, statusFilter]);
+  }, [report, search, statusFilter, dateFilterMode, singleDate, dateRange]);
 
   const selectedMessage = useMemo(
     () => filteredMessages.find((m) => m.uid === selectedUid) || filteredMessages[0] || null,
@@ -187,10 +239,11 @@ export default function GmailTesterPage() {
     }
   };
 
-  const copyBody = async () => {
-    if (!selectedMessage?.bodyPreview) return;
+  const copyExtracted = async () => {
+    const text = formatExtractedSummary(selectedMessage);
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(selectedMessage.bodyPreview);
+      await navigator.clipboard.writeText(text);
       setCopyStatus('Copied');
     } catch {
       setCopyStatus('Copy failed');
@@ -198,12 +251,63 @@ export default function GmailTesterPage() {
     setTimeout(() => setCopyStatus(''), 2000);
   };
 
+  const applyToPayoneerSheet = async () => {
+    if (!selectedMessage?.uid) return;
+    setPayoneerSyncLoading(true);
+    setError('');
+    setSuccess('');
+    try {
+      const { data } = await api.post('/gmail-test/sync-payoneer', { uid: selectedMessage.uid });
+      if (data?.status === 'updated') {
+        setSuccess(
+          `Payoneer sheet updated for ${data.storeUsername || 'store'} — ` +
+            `rate ${data.exchangeRate}, deposit ₹${data.bankDepositInr}. ` +
+            `View on Payoneer Sheet.`
+        );
+      } else {
+        setError(data?.skipReason || 'Could not match this email to a Payoneer row.');
+      }
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || 'Failed to update Payoneer sheet');
+    } finally {
+      setPayoneerSyncLoading(false);
+    }
+  };
+
+  const canApplyToPayoneer =
+    selectedMessage?.parsedAmountUsd != null &&
+    selectedMessage?.parsedGreetingName &&
+    (selectedMessage?.parsedExchangeRate != null || selectedMessage?.parsedBankDepositInr != null);
+
   const payoneerReadyCount = useMemo(() => {
     if (!report?.messages) return 0;
     return report.messages.filter(
-      (m) => m.status === 'ready' && m.senderAllowed && m.subjectAllowed && !m.seen
+      (m) =>
+        m.status === 'ready' &&
+        m.senderAllowed &&
+        m.subjectAllowed &&
+        !m.seen &&
+        messageMatchesDateFilter(m, {
+          mode: dateFilterMode,
+          singleDate,
+          rangeStart: dateRange.start,
+          rangeEnd: dateRange.end,
+        })
     ).length;
-  }, [report]);
+  }, [report, dateFilterMode, singleDate, dateRange]);
+
+  const clearDateFilter = () => {
+    setDateFilterMode('none');
+    setSingleDate('');
+    setDateRange({ start: '', end: '' });
+  };
+
+  const dateFilterActive =
+    dateFilterMode === 'single'
+      ? Boolean(singleDate)
+      : dateFilterMode === 'range'
+        ? Boolean(dateRange.start || dateRange.end)
+        : false;
 
   return (
     <Box sx={{ p: 3, maxWidth: 1400, mx: 'auto' }}>
@@ -223,7 +327,11 @@ export default function GmailTesterPage() {
             <Link component={RouterLink} to="/admin/transactions">
               Transactions
             </Link>
-            . Server filters sender and subject via env — not editable here.
+            {' '}or update{' '}
+            <Link component={RouterLink} to="/admin/payoneer">
+              Payoneer Sheet
+            </Link>{' '}
+            (exchange rate + bank deposit matched by USD amount and store name from the greeting).
           </Typography>
         </Box>
         <Button
@@ -345,7 +453,7 @@ export default function GmailTesterPage() {
                   <TextField
                     size="small"
                     fullWidth
-                    placeholder="Search from, subject, body, amount, skip reason…"
+                    placeholder="Search from, subject, amount, greeting, skip reason…"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     InputProps={{
@@ -368,6 +476,77 @@ export default function GmailTesterPage() {
                     </Select>
                   </FormControl>
                 </Stack>
+                <Stack
+                  direction={{ xs: 'column', md: 'row' }}
+                  spacing={2}
+                  alignItems={{ md: 'flex-end' }}
+                  flexWrap="wrap"
+                  useFlexGap
+                >
+                  <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 160 } }}>
+                    <InputLabel id="gmail-date-mode">Date filter</InputLabel>
+                    <Select
+                      labelId="gmail-date-mode"
+                      label="Date filter"
+                      value={dateFilterMode}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setDateFilterMode(v);
+                        if (v === 'none') {
+                          setSingleDate('');
+                          setDateRange({ start: '', end: '' });
+                        }
+                      }}
+                    >
+                      <MenuItem value="none">All dates</MenuItem>
+                      <MenuItem value="single">Single day</MenuItem>
+                      <MenuItem value="range">Date range</MenuItem>
+                    </Select>
+                  </FormControl>
+                  {dateFilterMode === 'single' ? (
+                    <TextField
+                      size="small"
+                      type="date"
+                      label="Received date (PT)"
+                      value={singleDate}
+                      onChange={(e) => setSingleDate(e.target.value)}
+                      InputLabelProps={{ shrink: true }}
+                      sx={{ width: { xs: '100%', sm: 200 } }}
+                      helperText="Gmail received date, US Pacific"
+                    />
+                  ) : null}
+                  {dateFilterMode === 'range' ? (
+                    <>
+                      <TextField
+                        size="small"
+                        type="date"
+                        label="From (PT)"
+                        value={dateRange.start}
+                        onChange={(e) =>
+                          setDateRange((prev) => ({ ...prev, start: e.target.value }))
+                        }
+                        InputLabelProps={{ shrink: true }}
+                        sx={{ width: { xs: '100%', sm: 170 } }}
+                      />
+                      <TextField
+                        size="small"
+                        type="date"
+                        label="To (PT)"
+                        value={dateRange.end}
+                        onChange={(e) =>
+                          setDateRange((prev) => ({ ...prev, end: e.target.value }))
+                        }
+                        InputLabelProps={{ shrink: true }}
+                        sx={{ width: { xs: '100%', sm: 170 } }}
+                      />
+                    </>
+                  ) : null}
+                  {dateFilterMode !== 'none' ? (
+                    <Button size="small" onClick={clearDateFilter}>
+                      Clear dates
+                    </Button>
+                  ) : null}
+                </Stack>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   {QUICK_SEARCHES.map((q) => (
                     <Chip
@@ -382,6 +561,21 @@ export default function GmailTesterPage() {
                   {search ? (
                     <Chip size="small" label="Clear search" onClick={() => setSearch('')} clickable />
                   ) : null}
+                  <Chip
+                    size="small"
+                    label="Today (PT)"
+                    variant={
+                      dateFilterMode === 'single' && singleDate === getTodayPtDateString()
+                        ? 'filled'
+                        : 'outlined'
+                    }
+                    onClick={() => {
+                      setDateFilterMode('single');
+                      setSingleDate(getTodayPtDateString());
+                      setDateRange({ start: '', end: '' });
+                    }}
+                    clickable
+                  />
                 </Stack>
               </Stack>
             </>
@@ -393,6 +587,13 @@ export default function GmailTesterPage() {
         <Stack spacing={2}>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
             <Chip label={`Inbox: ${report.inboxTotal ?? '?'}`} />
+            {report.imapFiltered ? (
+              <Chip
+                label={`Payoneer match in inbox: ${report.matchingInboxTotal ?? report.scanned ?? '?'}`}
+                color="info"
+                variant="outlined"
+              />
+            ) : null}
             <Chip label={`Fetched: ${report.scanned}`} />
             <Chip label={`Showing: ${filteredMessages.length}`} color="primary" variant="outlined" />
             <Chip color="success" label={`Ready: ${report.ready ?? 0}`} />
@@ -400,6 +601,19 @@ export default function GmailTesterPage() {
             <Chip variant="outlined" label={`Scan: ${report.mode}`} />
             {report.bankAccount?.name ? (
               <Chip variant="outlined" label={`Bank: ${report.bankAccount.name}`} />
+            ) : null}
+            {dateFilterActive ? (
+              <Chip
+                size="small"
+                color="info"
+                variant="outlined"
+                label={
+                  dateFilterMode === 'single'
+                    ? `Date: ${singleDate}`
+                    : `Dates: ${dateRange.start || '…'} → ${dateRange.end || '…'}`
+                }
+                onDelete={clearDateFilter}
+              />
             ) : null}
           </Stack>
 
@@ -410,7 +624,10 @@ export default function GmailTesterPage() {
             onSelect={setSelectedUid}
             selectedMessage={selectedMessage}
             copyStatus={copyStatus}
-            onCopyBody={copyBody}
+            onCopyExtracted={copyExtracted}
+            onApplyPayoneer={applyToPayoneerSheet}
+            payoneerSyncLoading={payoneerSyncLoading}
+            canApplyToPayoneer={canApplyToPayoneer}
           />
         </Stack>
       ) : (
@@ -420,8 +637,10 @@ export default function GmailTesterPage() {
             Click <strong>Fetch mail</strong> to load inbox messages from the API server.
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Default filter after fetch: Payoneer sender + subject. Large inboxes may take up to a few
-            minutes.
+            {status?.allowedSenders?.length || status?.allowedSubjects?.length
+              ? 'Fetch uses server sender/subject filters via Gmail search — not the full inbox.'
+              : 'Set GMAIL_IMPORT_ALLOWED_SENDERS and GMAIL_IMPORT_ALLOWED_SUBJECTS on the API to pre-filter Payoneer mail.'}{' '}
+            Large unfiltered inboxes may take up to a few minutes.
           </Typography>
         </Paper>
       )}
@@ -495,8 +714,9 @@ function StatusPanel({ status, apiBase }) {
           </Typography>
         </Box>
         <Typography variant="caption" color="text.secondary">
-          API: <code>{apiBase}</code> · Import only processes <strong>unread</strong> mail that passes
-          these filters.
+          API: <code>{apiBase}</code> · With env filters, fetch runs Gmail search (
+          <strong>from</strong> + <strong>subject</strong>) before downloading bodies. Import still
+          uses <strong>unread</strong> mail only.
         </Typography>
       </Stack>
     </Paper>
@@ -510,7 +730,10 @@ function MailResultsLayout({
   onSelect,
   selectedMessage,
   copyStatus,
-  onCopyBody,
+  onCopyExtracted,
+  onApplyPayoneer,
+  payoneerSyncLoading,
+  canApplyToPayoneer,
 }) {
   return (
     <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems="stretch">
@@ -521,7 +744,7 @@ function MailResultsLayout({
               <TableRow>
                 <TableCell width={88}>Status</TableCell>
                 <TableCell>From / subject</TableCell>
-                <TableCell width={100}>Amount</TableCell>
+                <TableCell>Amount / INR</TableCell>
                 <TableCell width={150}>Received</TableCell>
               </TableRow>
             </TableHead>
@@ -572,10 +795,17 @@ function MailResultsLayout({
                     ) : null}
                   </TableCell>
                   <TableCell>
-                    {m.parsedAmount != null ? (
-                      <Typography variant="body2" fontWeight={600}>
-                        {m.parsedAmount}
-                      </Typography>
+                    {m.parsedBankDepositInr != null || m.parsedAmount != null ? (
+                      <>
+                        <Typography variant="body2" fontWeight={600}>
+                          ₹{m.parsedBankDepositInr ?? m.parsedAmount}
+                        </Typography>
+                        {m.parsedAmountUsd != null ? (
+                          <Typography variant="caption" color="text.secondary" display="block">
+                            ${m.parsedAmountUsd}
+                          </Typography>
+                        ) : null}
+                      </>
                     ) : (
                       '—'
                     )}
@@ -596,7 +826,7 @@ function MailResultsLayout({
                 <TableRow>
                   <TableCell colSpan={4} align="center" sx={{ py: 4 }}>
                     {totalFetched > 0
-                      ? 'No messages match your search or filter. Try “All fetched” or clear search.'
+                      ? 'No messages match your search, date, or filter. Try “All fetched” or clear filters.'
                       : 'No messages in this scan.'}
                   </TableCell>
                 </TableRow>
@@ -640,24 +870,22 @@ function MailResultsLayout({
               </Alert>
             ) : null}
             <Divider />
-            <Typography variant="subtitle2">Parsed for Transactions</Typography>
-            <Stack direction="row" spacing={3}>
-              <Box>
-                <Typography variant="caption" color="text.secondary">
-                  Amount (INR)
-                </Typography>
-                <Typography variant="h6">{selectedMessage.parsedAmount ?? '—'}</Typography>
-              </Box>
-              <Box>
-                <Typography variant="caption" color="text.secondary">
-                  Date
-                </Typography>
-                <Typography variant="body1">{formatWhen(selectedMessage.parsedDate)}</Typography>
-              </Box>
-            </Stack>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Typography variant="subtitle2">Body preview</Typography>
-              <Button size="small" startIcon={<ContentCopyIcon />} onClick={onCopyBody}>
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Typography variant="subtitle2">Extracted from Payoneer email</Typography>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={onApplyPayoneer}
+                disabled={!canApplyToPayoneer || payoneerSyncLoading}
+              >
+                {payoneerSyncLoading ? 'Updating…' : 'Update Payoneer Sheet'}
+              </Button>
+              <Button
+                size="small"
+                startIcon={<ContentCopyIcon />}
+                onClick={onCopyExtracted}
+                disabled={!formatExtractedSummary(selectedMessage)}
+              >
                 Copy
               </Button>
               {copyStatus ? (
@@ -669,17 +897,68 @@ function MailResultsLayout({
             <Paper
               variant="outlined"
               sx={{
-                p: 1.5,
-                maxHeight: 360,
-                overflow: 'auto',
-                fontFamily: 'ui-monospace, monospace',
-                fontSize: '0.8rem',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
+                p: 2,
+                bgcolor: 'action.hover',
               }}
             >
-              {selectedMessage.bodyPreview || '(empty)'}
+              {selectedMessage.parsedGreetingLine ? (
+                <Typography variant="body1" sx={{ mb: 2, fontWeight: 500 }}>
+                  {selectedMessage.parsedGreetingLine}
+                </Typography>
+              ) : null}
+              <Stack spacing={1.5}>
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Amount (USD)
+                  </Typography>
+                  <Typography variant="body1" fontWeight={600}>
+                    {selectedMessage.parsedAmountUsd != null
+                      ? `$${selectedMessage.parsedAmountUsd}`
+                      : '—'}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Exchange rate
+                  </Typography>
+                  <Typography variant="body1" fontWeight={600}>
+                    {selectedMessage.parsedExchangeRate != null
+                      ? `1 USD = ${selectedMessage.parsedExchangeRate} INR`
+                      : '—'}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Bank deposit (INR)
+                  </Typography>
+                  <Typography variant="body1" fontWeight={600}>
+                    {selectedMessage.parsedBankDepositInr != null
+                      ? `₹${selectedMessage.parsedBankDepositInr}`
+                      : selectedMessage.parsedAmount != null
+                        ? `₹${selectedMessage.parsedAmount}`
+                        : '—'}
+                  </Typography>
+                </Box>
+              </Stack>
             </Paper>
+            {selectedMessage.parsedCustomerId ? (
+              <Typography variant="body2">
+                <strong>Customer ID:</strong>{' '}
+                <Box component="span" sx={{ fontFamily: 'ui-monospace, monospace' }}>
+                  {selectedMessage.parsedCustomerId}
+                </Box>
+              </Typography>
+            ) : null}
+            {selectedMessage.resolvedBankAccount ? (
+              <Typography variant="caption" color="text.secondary">
+                Import target bank: <strong>{selectedMessage.resolvedBankAccount.name}</strong>
+                {selectedMessage.parsedCustomerId ? ' (Payoneer Customer ID → Bank Accounts Payoneer ID)' : ''}
+              </Typography>
+            ) : null}
+            <Typography variant="caption" color="text.secondary" display="block">
+              Transaction credit uses bank deposit (INR). Date:{' '}
+              {formatWhen(selectedMessage.parsedDate)}
+            </Typography>
           </Stack>
         ) : (
           <Typography color="text.secondary" sx={{ pt: 4, textAlign: 'center' }}>
