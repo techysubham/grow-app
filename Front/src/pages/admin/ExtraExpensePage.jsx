@@ -54,7 +54,7 @@ import {
 import api from '../../lib/api';
 
 const PAYMENT_METHODS = ['Cash', 'UPI', 'Card', 'Bank Transfer', 'Payoneer', 'Other', 'Growmentality'];
-const DIALOG_PAID_BY_ORDER = ['Sachin Sir', 'Sakchi', 'Satya Sir', 'Shubhankar Sir', 'Bapun', 'Soubhagya'];
+const DIALOG_PAID_BY_ORDER = ['Sachin Sir', 'Sakchi', 'Satya Sir', 'Shubhankar Sir', 'Bapun', 'Soubhagya Sir'];
 
 const CHART_COLORS = ['#1976d2', '#ed6c02', '#2e7d32', '#9c27b0', '#d32f2f', '#0288d1', '#6d4c41', '#455a64'];
 const EMPTY_FILTERS = {
