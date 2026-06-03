@@ -32,8 +32,10 @@ import {
   CardContent,
   TablePagination
 } from '@mui/material';
+import Switch from '@mui/material/Switch';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import AddIcon from '@mui/icons-material/Add';
+import GetAppIcon from '@mui/icons-material/GetApp';
 import {
   BarChart,
   Bar,
@@ -100,6 +102,7 @@ export default function FinanceCashflowPage() {
   });
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [notYetFirst, setNotYetFirst] = useState(false);
 
   // Analytics state
   const [tabValue, setTabValue] = useState(0);
@@ -131,7 +134,10 @@ export default function FinanceCashflowPage() {
     const fetchSellers = async () => {
       try {
         const { data } = await api.get('/ebay/sellers-list');
-        setSellers(Array.isArray(data) ? data : []);
+        const list = Array.isArray(data) ? data : [];
+        setSellers(list);
+        // default to all sellers
+        setSelectedSeller('');
       } catch (err) {
         console.error('Failed to load sellers:', err);
       }
@@ -161,6 +167,7 @@ export default function FinanceCashflowPage() {
 
   useEffect(() => {
     load();
+    setSelectedSeller(''); // Ensure default to 'All Sellers' on initial load
   }, [load]);
 
   const handleOpenDialog = (entry = null, seller = null) => {
@@ -657,7 +664,7 @@ export default function FinanceCashflowPage() {
               onChange={(e) => setSelectedSeller(e.target.value)}
               label="Account"
             >
-              <MenuItem value="">All Accounts</MenuItem>
+                                    <MenuItem value="">All Sellers</MenuItem>
               {sellers.map(s => (
                 <MenuItem key={s._id} value={s._id}>{s.user?.username || s._id}</MenuItem>
               ))}
@@ -716,19 +723,64 @@ export default function FinanceCashflowPage() {
                   getPaginatedData().map((item) => {
                     if (item.type === 'seller-header') {
                       const seller = item.data;
-                      return (
-                        <TableRow key={item.id} sx={{ bgcolor: 'grey.50', fontWeight: 700 }}>
-                          <TableCell sx={{ fontWeight: 700 }}>{seller.sellerName}</TableCell>
-                          <TableCell sx={{ fontWeight: 700, color: 'text.secondary' }}>TOTAL</TableCell>
-                          <TableCell></TableCell>
-                          <TableCell></TableCell>
-                          <TableCell align="right" sx={{ fontWeight: 700 }}>{formatCurrency(seller.gross.value)}</TableCell>
-                          <TableCell align="right" sx={{ fontWeight: 700 }}>{formatCurrency(seller.taxesAndFees.value)}</TableCell>
-                          <TableCell align="right" sx={{ fontWeight: 700 }}>{formatCurrency(seller.sellingCosts.value)}</TableCell>
-                          <TableCell align="right" sx={{ fontWeight: 700 }}>{formatCurrency(seller.net.value)}</TableCell>
-                          <TableCell></TableCell>
-                        </TableRow>
-                      );
+                        return (
+                          <TableRow key={item.id}>
+                            <TableCell colSpan={9} sx={{ py: 1 }}>
+                              <Paper variant="outlined" sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: 1.25, borderRadius: 3 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  <Typography sx={{ fontWeight: 700 }}>
+                                    {`${(seller.marketplaces?.length || 0)} orders in queue${seller.marketplaces?.[0]?.date ? ` for ${new Date(seller.marketplaces[0].date).toLocaleDateString()}` : ''}`}
+                                  </Typography>
+
+                                  <Chip label={`${seller.carriedOverCount || 0} carried over`} size="small" sx={{ bgcolor: '#F97316', color: '#fff', fontWeight: 700 }} />
+                                  <Chip label={`${seller.sellerGroupsCount || 0} seller groups`} size="small" sx={{ bgcolor: '#E5E7EB', fontWeight: 700 }} />
+                                  <Chip label={`${seller.notYetCount || (seller.marketplaces?.length || 0)} not yet`} size="small" sx={{ bgcolor: '#3B82F6', color: '#fff', fontWeight: 700 }} />
+                                  <Chip label={`${seller.doneHiddenCount || 0} done hidden`} size="small" sx={{ bgcolor: '#F3F4F6' }} />
+                                </Box>
+
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <FormControl size="small" sx={{ minWidth: 220 }}>
+                                    <InputLabel id="seller-select-label">Seller</InputLabel>
+                                    <Select
+                                      labelId="seller-select-label"
+                                      id="seller-select"
+                                      value={selectedSeller}
+                                      label="Seller"
+                                      onChange={(e) => setSelectedSeller(e.target.value)}
+                                      sx={{
+                                        minWidth: 220,
+                                        maxWidth: 360,
+                                        '& .MuiSelect-select': {
+                                          overflow: 'hidden',
+                                          textOverflow: 'ellipsis',
+                                          whiteSpace: 'nowrap'
+                                        }
+                                      }}
+                                    >
+                                      <MenuItem value="">All Sellers</MenuItem>
+                                      {sellers.map(s => (
+                                        <MenuItem key={s._id} value={s._id}>{s.user?.username || s._id}</MenuItem>
+                                      ))}
+                                    </Select>
+                                  </FormControl>
+
+                                  <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mr: 0.5 }}>
+                                    <Typography sx={{ fontSize: '0.85rem', color: 'text.secondary' }}>Not Yet first</Typography>
+                                    <Switch size="small" checked={notYetFirst} onChange={(e) => setNotYetFirst(e.target.checked)} />
+                                  </Stack>
+
+                                  <Button variant="contained" size="small" color="warning" startIcon={<GetAppIcon />}>
+                                    CSV
+                                  </Button>
+
+                                  <IconButton size="small" onClick={load} title="Refresh">
+                                    <RefreshIcon fontSize="small" />
+                                  </IconButton>
+                                </Stack>
+                              </Paper>
+                            </TableCell>
+                          </TableRow>
+                        );
                     } else if (item.type === 'entry') {
                       const { seller, mp } = item;
                       return (

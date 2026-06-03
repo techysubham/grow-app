@@ -1558,6 +1558,15 @@ export default function AffiliateOrdersPage() {
     );
     const isDailyOrdersLoading = ordersLoading;
     const orderSections = buildOrderSections(orders, showNotYetFirst);
+    
+    // Paginate the displayed orders for the current page
+    const paginatedOrderSections = useMemo(() => {
+        const startIndex = (currentPage - 1) * AFFILIATE_ORDERS_PER_PAGE;
+        const endIndex = startIndex + AFFILIATE_ORDERS_PER_PAGE;
+        const paginatedOrders = displayedOrders.slice(startIndex, endIndex);
+        return buildOrderSections(paginatedOrders, showNotYetFirst);
+    }, [displayedOrders, currentPage, showNotYetFirst]);
+    
     const exportOrders = orderSections.flatMap((section) => section.orders);
     const exportEligibleOrders = useMemo(() => (
         exportOrders.filter((order) => isNotYetStatus(order) && hasAffiliateLinks(order))
@@ -1796,7 +1805,7 @@ export default function AffiliateOrdersPage() {
                                     </TableCell>
                                 </TableRow>
                             )}
-                            {orderSections.map((section) => {
+                            {paginatedOrderSections.map((section) => {
                                 const sectionSellerGroupStats = getSellerGroupStats(section.orders);
 
                                 return section.orders.map((order, idx) => {
