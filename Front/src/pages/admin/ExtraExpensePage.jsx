@@ -63,6 +63,7 @@ const EMPTY_FILTERS = {
     to: '',
     paidBy: '',
     category: '',
+    paymentMethod: '',
     search: '',
     searchSelect: '',
 };
@@ -338,6 +339,7 @@ const ExtraExpensePage = () => {
         // If dateMode is 'None', don't send any date params
         
         if (appliedFilters.paidBy) p.paidBy = appliedFilters.paidBy;
+        if (appliedFilters.paymentMethod) p.paymentMethod = appliedFilters.paymentMethod;
         if (appliedFilters.category) {
             // Convert new category to old categories for backend query
             const oldCats = getOldCategoriesForNewCategory(appliedFilters.category);
@@ -488,12 +490,22 @@ const ExtraExpensePage = () => {
     };
 
     const hasActiveFilters = Boolean(
-        appliedFilters.dateMode !== 'None' || appliedFilters.date || appliedFilters.from || appliedFilters.to || appliedFilters.paidBy || appliedFilters.category || appliedFilters.search.trim()
+        appliedFilters.dateMode !== 'None' || appliedFilters.date || appliedFilters.from || appliedFilters.to || appliedFilters.paidBy || appliedFilters.category || appliedFilters.paymentMethod || appliedFilters.search.trim()
     );
 
+    const displayedExpenses = useMemo(() => {
+        let list = expenses || [];
+        const pm = (appliedFilters.paymentMethod || '').trim();
+        if (pm) {
+            list = list.filter((e) => ((e.paymentMethod || '').toLowerCase() === pm.toLowerCase()));
+        }
+        // keep other client-side filters if needed in future
+        return list;
+    }, [expenses, appliedFilters.paymentMethod]);
+
     const listTotal = useMemo(
-        () => expenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0),
-        [expenses]
+        () => displayedExpenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0),
+        [displayedExpenses]
     );
 
     const toggleChartsSection = () => {
@@ -688,6 +700,21 @@ const ExtraExpensePage = () => {
                                 <MenuItem value="">All</MenuItem>
                                 {CATEGORY_OPTIONS.map((cat) => (
                                     <MenuItem key={cat} value={cat}>{cat}</MenuItem>
+                                ))}
+                            </Select>
+                        </FormControl>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={2}>
+                        <FormControl size="small" fullWidth>
+                            <InputLabel>Payment method</InputLabel>
+                            <Select
+                                label="Payment method"
+                                value={filters.paymentMethod || ''}
+                                onChange={(e) => setFilters((f) => ({ ...f, paymentMethod: e.target.value }))}
+                            >
+                                <MenuItem value="">All</MenuItem>
+                                {PAYMENT_METHODS.map((m) => (
+                                    <MenuItem key={m} value={m}>{m}</MenuItem>
                                 ))}
                             </Select>
                         </FormControl>
@@ -900,13 +927,13 @@ const ExtraExpensePage = () => {
             </Dialog>
 
             <Box sx={{ display: { xs: 'block', md: 'none' }, mb: 3 }}>
-                {expenses.length === 0 ? (
+                {displayedExpenses.length === 0 ? (
                     <Paper sx={{ p: 2, textAlign: 'center' }}>
                         <Typography variant="body2" color="text.secondary">No expenses found.</Typography>
                     </Paper>
                 ) : (
                     <Stack spacing={1.5}>
-                        {expenses.map((expense) => (
+                        {displayedExpenses.map((expense) => (
                             <MobileExpenseCard
                                 key={expense._id}
                                 expense={expense}
@@ -916,7 +943,7 @@ const ExtraExpensePage = () => {
                         ))}
                         <Paper sx={{ p: 1.5, borderRadius: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                                Total ({expenses.length})
+                                Total ({displayedExpenses.length})
                             </Typography>
                             <Typography variant="subtitle1" sx={{ fontWeight: 800, color: 'error.main' }}>
                                 {formatInr(listTotal)}
@@ -941,7 +968,7 @@ const ExtraExpensePage = () => {
                         </TableRow>
                     </TableHead>
                     <TableBody>
-                        {expenses.map((expense) => (
+                        {displayedExpenses.map((expense) => (
                             <TableRow key={expense._id} hover>
                                 <TableCell>{new Date(expense.date).toLocaleDateString()}</TableCell>
                                 <TableCell sx={{ fontWeight: 600 }}>{expense.name}</TableCell>
@@ -966,13 +993,13 @@ const ExtraExpensePage = () => {
                                 </TableCell>
                             </TableRow>
                         ))}
-                        {expenses.length === 0 && (
+                        {displayedExpenses.length === 0 && (
                             <TableRow>
                                 <TableCell colSpan={8} align="center">No expenses found.</TableCell>
                             </TableRow>
                         )}
                     </TableBody>
-                    {expenses.length > 0 ? (
+                    {displayedExpenses.length > 0 ? (
                         <TableFooter>
                             <TableRow sx={{ bgcolor: 'grey.100' }}>
                                 <TableCell
@@ -983,7 +1010,7 @@ const ExtraExpensePage = () => {
                                         whiteSpace: 'nowrap',
                                     }}
                                 >
-                                    Total ({expenses.length})
+                                    Total ({displayedExpenses.length})
                                 </TableCell>
                                 <TableCell sx={{ borderTop: '2px solid', borderColor: 'divider' }} />
                                 <TableCell sx={{ borderTop: '2px solid', borderColor: 'divider' }} />
