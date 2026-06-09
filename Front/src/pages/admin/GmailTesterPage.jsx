@@ -258,10 +258,11 @@ export default function GmailTesterPage() {
     try {
       const { data } = await api.post('/gmail-test/sync-payoneer', { uid: selectedMessage.uid });
       if (data?.status === 'updated' || data?.status === 'created') {
+        const bankPart = data.bankAccountName ? `bank ${data.bankAccountName}` : 'matched row';
         setSuccess(
           (data.status === 'created'
-            ? `Payoneer row created and saved for ${data.storeUsername || 'store'}`
-            : `Payoneer sheet updated for ${data.storeUsername || 'store'}`) +
+            ? `Payoneer row created (${bankPart}, ${data.storeUsername || 'store'})`
+            : `Payoneer sheet updated (${bankPart}, ${data.storeUsername || 'store'})`) +
             ` — rate ${data.exchangeRate}, deposit ₹${data.bankDepositInr}. ` +
             `Open Payoneer Sheet to view.`
         );
@@ -277,7 +278,7 @@ export default function GmailTesterPage() {
 
   const canApplyToPayoneer =
     selectedMessage?.parsedAmountUsd != null &&
-    selectedMessage?.parsedGreetingName &&
+    (selectedMessage?.parsedGreetingName || selectedMessage?.parsedCustomerId) &&
     (selectedMessage?.parsedExchangeRate != null || selectedMessage?.parsedBankDepositInr != null);
 
   const payoneerReadyCount = useMemo(() => {
@@ -328,7 +329,8 @@ export default function GmailTesterPage() {
             <Link component={RouterLink} to="/admin/payoneer">
               Payoneer Sheet
             </Link>{' '}
-            (exchange rate + bank deposit matched by USD amount and store name from the greeting).
+            (exchange rate + bank deposit matched by USD amount, bank account from greeting or Customer ID,
+            and store when available).
           </Typography>
         </Box>
         <Button
@@ -925,6 +927,14 @@ function MailResultsLayout({
                 <Box component="span" sx={{ fontFamily: 'ui-monospace, monospace' }}>
                   {selectedMessage.parsedCustomerId}
                 </Box>
+                <Typography variant="caption" color="text.secondary" display="block">
+                  Used to match bank account (Payoneer ID on Bank Accounts).
+                </Typography>
+              </Typography>
+            ) : null}
+            {selectedMessage.parsedGreetingName ? (
+              <Typography variant="caption" color="text.secondary" display="block">
+                Greeting also matches bank name on Bank Accounts when Customer ID is missing.
               </Typography>
             ) : null}
             <Typography variant="caption" color="text.secondary" display="block">

@@ -1,35 +1,13 @@
 /**
- * Keys on `amazonData` from the backend ScraperAPI scrape — use for ASIN Auto-Fill direct mapping.
+ * Built-in keys on `amazonData` for Direct Mapping → Amazon Source Field dropdown.
  * Keep in sync with `Back/src/utils/asinAutofill.js` / `scraperApiProduct.js`.
- * `productInformation` is the full structured `product_information` object from ScraperAPI (JSON when mapped).
+ * Extra paths come from Amazon Product Info Columns (`amazonPiSourceOptions`).
  */
 export const AMAZON_DIRECT_SOURCE_OPTIONS = [
-  { value: 'asin', label: 'Amazon ASIN' },
   { value: 'title', label: 'Amazon Title' },
-  { value: 'price', label: 'Amazon Price' },
   { value: 'brand', label: 'Amazon Brand' },
   { value: 'description', label: 'Amazon Description' },
-  { value: 'review', label: 'Amazon Customer Reviews (full text for AI)' },
   { value: 'images', label: 'Amazon Images' },
-  { value: 'color', label: 'Amazon Color' },
-  { value: 'compatibility', label: 'Amazon Compatibility' },
-  { value: 'model', label: 'Amazon Model' },
-  { value: 'material', label: 'Amazon Material' },
-  { value: 'specialFeatures', label: 'Amazon Special Features' },
-  { value: 'size', label: 'Amazon Size' },
-  { value: 'formFactor', label: 'Amazon Form Factor' },
-  { value: 'screenSize', label: 'Amazon Screen Size' },
-  { value: 'bandMaterial', label: 'Amazon Band Material' },
-  { value: 'bandWidth', label: 'Amazon Band Width' },
-  { value: 'bandColor', label: 'Amazon Band Color' },
-  { value: 'includedComponents', label: 'Amazon Included Components' },
-  { value: 'productInformation', label: 'Amazon Product Information (full block)' },
-  { value: 'productCategory', label: 'Amazon Product Category' },
-  { value: 'itemDimensions', label: 'Amazon Item Dimensions' },
-  { value: 'waterResistanceLevel', label: 'Amazon Water Resistance' },
-  { value: 'availabilityStatus', label: 'Amazon Availability' },
-  { value: 'soldBy', label: 'Amazon Sold By' },
-  { value: 'bestSellersRank', label: 'Amazon Best Sellers Rank' }
 ];
 
 /** Placeholders supported in AI prompts (subset of amazonData + joined images). */
