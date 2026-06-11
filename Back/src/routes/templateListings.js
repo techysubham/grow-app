@@ -5,6 +5,10 @@ import ListingTemplate from '../models/ListingTemplate.js';
 import Seller from '../models/Seller.js';
 import SellerPricingConfig from '../models/SellerPricingConfig.js';
 import { fetchAmazonData, applyFieldConfigs, applyOverlayToScrapedImages } from '../utils/asinAutofill.js';
+import {
+  ensureCustomColumnFieldConfigs,
+  filterAutofillConfigsForColumnDefaults,
+} from '../utils/customColumnAmazonMapping.js';
 import { generateSKUFromASIN, generateSKUWithCount } from '../utils/skuGenerator.js';
 import { getEffectiveTemplate } from '../utils/templateMerger.js';
 import { getUsageStats, getFieldExtractionStats, getRecentErrors, checkQuotaStatus } from '../utils/apiUsageTracker.js';
@@ -12,6 +16,169 @@ import { getAsinCacheStats, clearAsinCache, invalidateAsinCache } from '../utils
 import AsinDirectory from '../models/AsinDirectory.js';
 
 const router = express.Router();
+
+function toPlainTemplateColumn(col) {
+  if (!col) return col;
+  if (typeof col.toObject === 'function') return col.toObject();
+  if (typeof col.toJSON === 'function') return col.toJSON();
+  return { ...col };
+}
+
+function resolveAutofillFieldConfigs(template) {
+  const raw = Array.isArray(template?.asinAutomation?.fieldConfigs)
+    ? template.asinAutomation.fieldConfigs
+    : [];
+  const customColumns = resolveAutofillCustomColumns(template);
+  const merged = ensureCustomColumnFieldConfigs(raw, customColumns);
+  return filterAutofillConfigsForColumnDefaults(merged, customColumns);
+}
+
+function resolveAutofillCustomColumns(template) {
+  return Array.isArray(template?.customColumns)
+    ? template.customColumns.map(toPlainTemplateColumn)
+    : [];
+}
+
+function applyCustomColumnDefaults(customFieldsMerged, customColumns = []) {
+  for (const col of customColumns) {
+    const defaultValue = String(col?.defaultValue ?? '').trim();
+    if (!defaultValue || !col?.name) continue;
+    const current = String(customFieldsMerged[col.name] ?? '').trim();
+    if (!current || current.toLowerCase() === 'does not apply') {
+      customFieldsMerged[col.name] = col.defaultValue;
+    }
+  }
+}
+
+function fieldConfigsUsePiSources(fieldConfigs = []) {
+  return fieldConfigs.some((config) => String(config?.amazonField || '').startsWith('amazon_pi_'));
+}
+
+function buildSourceDataFromAmazon(amazonData = {}) {
+  return {
+    title: amazonData.title,
+    brand: amazonData.brand,
+    price: amazonData.price,
+    description: amazonData.description,
+    images: amazonData.images,
+    color: amazonData.color,
+    compatibility: amazonData.compatibility,
+    model: amazonData.model,
+    material: amazonData.material,
+    specialFeatures: amazonData.specialFeatures,
+    size: amazonData.size,
+    formFactor: amazonData.formFactor,
+    screenSize: amazonData.screenSize,
+    bandMaterial: amazonData.bandMaterial,
+    bandWidth: amazonData.bandWidth,
+    bandColor: amazonData.bandColor,
+    includedComponents: amazonData.includedComponents,
+    productCategory: amazonData.productCategory,
+    itemDimensions: amazonData.itemDimensions,
+    waterResistanceLevel: amazonData.waterResistanceLevel,
+    availabilityStatus: amazonData.availabilityStatus,
+    soldBy: amazonData.soldBy,
+    bestSellersRank: amazonData.bestSellersRank,
+    review: amazonData.review || '',
+    productInformation: amazonData.productInformation || {},
+  };
+}
+
+async function runTemplateAutofill(template, amazonData, fieldConfigs, pricingConfig) {
+  const customColumns = resolveAutofillCustomColumns(template);
+  const { coreFields, customFields, pricingCalculation } = await applyFieldConfigs(
+    amazonData,
+    fieldConfigs,
+    pricingConfig,
+    customColumns
+  );
+  const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
+  const customFieldsMerged = mergeReviewIntoCustomFields(customFields, coreFields, customColumns);
+  applyCustomColumnDefaults(customFieldsMerged, customColumns);
+  return { coreFields, customFields, customFieldsMerged, mergedCoreFields, pricingCalculation };
+}
+
+async function buildAmazonDataFromDirectoryDoc(asin, region, doc) {
+  const directoryImages = doc?.images || [];
+  const processedDirectoryImages = await applyOverlayToScrapedImages(directoryImages);
+  return doc ? {
+    asin,
+    title: doc.title || '',
+    brand: doc.brand || '',
+    price: doc.price || '',
+    description: doc.description || '',
+    review: doc.review || '',
+    images: processedDirectoryImages,
+    color: doc.color || '',
+    compatibility: doc.compatibility || '',
+    model: doc.model || '',
+    material: doc.material || '',
+    specialFeatures: doc.specialFeatures || '',
+    size: doc.size || '',
+    includedComponents: doc.includedComponents || '',
+    productInformation: {},
+  } : {
+    asin,
+    title: '', brand: '', price: '', description: '',
+    images: [], color: '', compatibility: '',
+    model: '', material: '', specialFeatures: '', size: '',
+    includedComponents: '', productInformation: {},
+  };
+}
+
+async function resolveAmazonDataForPreview(asin, region, directoryDoc, fieldConfigs) {
+  if (fieldConfigsUsePiSources(fieldConfigs)) {
+    try {
+      return await fetchAmazonData(asin, region);
+    } catch (error) {
+      console.warn(`[preview] Live scrape failed for ${asin}, using directory data:`, error.message);
+    }
+  }
+  return buildAmazonDataFromDirectoryDoc(asin, region, directoryDoc);
+}
+
+async function buildDuplicateUpdateablePreviewItem({
+  asin,
+  region,
+  template,
+  existingListing,
+  fieldConfigs,
+  pricingConfig,
+}) {
+  const amazonData = await fetchAmazonData(asin, region);
+  const autofill = await runTemplateAutofill(template, amazonData, fieldConfigs, pricingConfig);
+  const asinCountDoc = await AsinDirectory.findOne({ asin }).select('listingCount').lean();
+  const futureSKU = generateSKUWithCount(asin, asinCountDoc?.listingCount || 0);
+  const safeAiDescription = getConfiguredAiDescription(
+    fieldConfigs,
+    autofill.coreFields,
+    autofill.customFields
+  );
+
+  return {
+    id: `preview-${asin}`,
+    asin,
+    sku: futureSKU,
+    status: 'duplicate_updateable',
+    aiDescription: safeAiDescription,
+    sourceData: buildSourceDataFromAmazon(amazonData),
+    generatedListing: {
+      ...autofill.mergedCoreFields,
+      customLabel: futureSKU,
+      customFields: autofill.customFieldsMerged,
+      _asinReference: asin,
+      _existingListingId: existingListing._id,
+    },
+    pricingCalculation: autofill.pricingCalculation,
+    warnings: [
+      'This ASIN already exists in this template — fields refreshed from Amazon.',
+      existingListing.duplicateCount > 0
+        ? `Previously updated ${existingListing.duplicateCount} time(s).`
+        : 'First time editing this ASIN.',
+    ],
+    errors: [],
+  };
+}
 
 function parseAmazonPriceToNumber(priceValue) {
   const numeric = parseFloat(String(priceValue || '').replace(/[^0-9.]/g, ''));
@@ -553,9 +720,7 @@ router.get('/bulk-preview-stream', requireAuthSSE, async (req, res) => {
       return res.end();
     }
 
-    const fieldConfigs = Array.isArray(template?.asinAutomation?.fieldConfigs)
-      ? template.asinAutomation.fieldConfigs
-      : [];
+    const fieldConfigs = resolveAutofillFieldConfigs(template);
     // Get pricing config
     let pricingConfig = template.pricingConfig;
     const sellerConfig = await SellerPricingConfig.findOne({ sellerId, templateId });
@@ -625,47 +790,14 @@ router.get('/bulk-preview-stream', requireAuthSSE, async (req, res) => {
         // will have the same SKU and should be updateable, not blocked
         if (asinInCurrentTemplate.has(asin)) {
           const existingListing = asinInCurrentTemplate.get(asin);
-
-          // Get existing customFields (already an object from .lean())
-          const existingCustomFields = existingListing.customFields || {};
-
-          // Compute future SKU based on current listing count
-          const asinCountDoc = await AsinDirectory.findOne({ asin }).select('listingCount').lean();
-          const futureSKU = generateSKUWithCount(asin, asinCountDoc?.listingCount || 0);
-
-          // Return existing listing data for editing (no re-fetch)
-          const item = {
-            id: `preview-${asin}`,
+          const item = await buildDuplicateUpdateablePreviewItem({
             asin,
-            sku: futureSKU,
-            status: 'duplicate_updateable',
-
-            // Return existing data as generatedListing so modal can display it
-            generatedListing: {
-              title: existingListing.title,
-              description: existingListing.description,
-              startPrice: existingListing.startPrice,
-              quantity: existingListing.quantity,
-              itemPhotoUrl: existingListing.itemPhotoUrl || '',
-              conditionId: existingListing.conditionId || '',
-              format: existingListing.format || '',
-              duration: existingListing.duration || '',
-              location: existingListing.location || '',
-              customLabel: futureSKU,
-              customFields: existingCustomFields,
-              _asinReference: asin,
-              _existingListingId: existingListing._id // Track which listing to update
-            },
-
-            warnings: [
-              `This ASIN already exists in this template.`,
-              existingListing.duplicateCount > 0
-                ? `Previously updated ${existingListing.duplicateCount} time(s).`
-                : `First time editing this ASIN.`
-            ],
-            errors: []
-          };
-
+            region,
+            template,
+            existingListing,
+            fieldConfigs,
+            pricingConfig,
+          });
           res.write(`data: ${JSON.stringify({ type: 'item', item, progress: ++completed, total: asins.length })}\n\n`);
           return;
         }
@@ -689,23 +821,8 @@ router.get('/bulk-preview-stream', requireAuthSSE, async (req, res) => {
         
         // Fetch and process ASIN (new listing case)
         const amazonData = await fetchAmazonData(asin, region);
-        const { coreFields, customFields, pricingCalculation } =
-          await applyFieldConfigs(amazonData, fieldConfigs, pricingConfig);
-        let customFieldsMerged = mergeReviewIntoCustomFields(
-          customFields,
-          coreFields,
-          template.customColumns
-        );
-
-        const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
-
-        if (template?.customColumns && template.customColumns.length > 0) {
-          template.customColumns.forEach(col => {
-            if (col.defaultValue && !customFieldsMerged[col.name]) {
-              customFieldsMerged[col.name] = col.defaultValue;
-            }
-          });
-        }
+        const autofill = await runTemplateAutofill(template, amazonData, fieldConfigs, pricingConfig);
+        const { coreFields, customFields, customFieldsMerged, mergedCoreFields, pricingCalculation } = autofill;
 
         const warnings = [];
         const validationErrors = [];
@@ -733,33 +850,7 @@ router.get('/bulk-preview-stream', requireAuthSSE, async (req, res) => {
           asin,
           sku: finalSKU,
           aiDescription: safeAiDescription,
-          sourceData: {
-            title: amazonData.title,
-            brand: amazonData.brand,
-            price: amazonData.price,
-            description: amazonData.description,
-            images: amazonData.images,
-            color: amazonData.color,
-            compatibility: amazonData.compatibility,
-            model: amazonData.model,
-            material: amazonData.material,
-            specialFeatures: amazonData.specialFeatures,
-            size: amazonData.size,
-            formFactor: amazonData.formFactor,
-            screenSize: amazonData.screenSize,
-            bandMaterial: amazonData.bandMaterial,
-            bandWidth: amazonData.bandWidth,
-            bandColor: amazonData.bandColor,
-            includedComponents: amazonData.includedComponents,
-            productCategory: amazonData.productCategory,
-            itemDimensions: amazonData.itemDimensions,
-            waterResistanceLevel: amazonData.waterResistanceLevel,
-            availabilityStatus: amazonData.availabilityStatus,
-            soldBy: amazonData.soldBy,
-            bestSellersRank: amazonData.bestSellersRank,
-            review: amazonData.review || '',
-            productInformation: amazonData.productInformation || {}
-          },
+          sourceData: buildSourceDataFromAmazon(amazonData),
           generatedListing: {
             ...mergedCoreFields,
             customLabel: finalSKU,
@@ -771,6 +862,11 @@ router.get('/bulk-preview-stream', requireAuthSSE, async (req, res) => {
           errors: validationErrors,
           status: validationErrors.length > 0 ? 'error' : (warnings.length > 0 ? 'warning' : 'success')
         };
+
+        console.log(
+          `[bulk-preview-stream] ${asin} custom fields:`,
+          Object.keys(customFieldsMerged || {}).join(', ') || '(none)'
+        );
 
         // Stream the completed item
         res.write(`data: ${JSON.stringify({ type: 'item', item, progress: ++completed, total: asins.length })}\n\n`);
@@ -848,9 +944,7 @@ router.get('/bulk-preview-from-directory-stream', requireAuthSSE, async (req, re
       return res.end();
     }
 
-    const fieldConfigs = Array.isArray(template?.asinAutomation?.fieldConfigs)
-      ? template.asinAutomation.fieldConfigs
-      : [];
+    const fieldConfigs = resolveAutofillFieldConfigs(template);
     // Get pricing config (seller override takes priority)
     let pricingConfig = template.pricingConfig;
     const sellerConfig = await SellerPricingConfig.findOne({ sellerId, templateId });
@@ -903,39 +997,17 @@ router.get('/bulk-preview-from-directory-stream', requireAuthSSE, async (req, re
           return;
         }
 
-        // Duplicate in current template — updateable
+        // Duplicate in current template — refresh from Amazon for review
         if (asinInCurrentTemplate.has(asin)) {
           const existingListing = asinInCurrentTemplate.get(asin);
-          // Compute future SKU based on current listing count
-          const asinCountDoc = await AsinDirectory.findOne({ asin }).select('listingCount').lean();
-          const futureSKU = generateSKUWithCount(asin, asinCountDoc?.listingCount || 0);
-          const item = {
-            id: `preview-${asin}`, asin,
-            sku: futureSKU,
-            status: 'duplicate_updateable',
-            generatedListing: {
-              title: existingListing.title,
-              description: existingListing.description,
-              startPrice: existingListing.startPrice,
-              quantity: existingListing.quantity,
-              itemPhotoUrl: existingListing.itemPhotoUrl || '',
-              conditionId: existingListing.conditionId || '',
-              format: existingListing.format || '',
-              duration: existingListing.duration || '',
-              location: existingListing.location || '',
-              customLabel: futureSKU,
-              customFields: existingListing.customFields || {},
-              _asinReference: asin,
-              _existingListingId: existingListing._id
-            },
-            warnings: [
-              'This ASIN already exists in this template.',
-              existingListing.duplicateCount > 0
-                ? `Previously updated ${existingListing.duplicateCount} time(s).`
-                : 'First time editing this ASIN.'
-            ],
-            errors: []
-          };
+          const item = await buildDuplicateUpdateablePreviewItem({
+            asin,
+            region,
+            template,
+            existingListing,
+            fieldConfigs,
+            pricingConfig,
+          });
           res.write(`data: ${JSON.stringify({ type: 'item', item, progress: ++completed, total: asins.length })}\n\n`);
           return;
         }
@@ -952,55 +1024,11 @@ router.get('/bulk-preview-from-directory-stream', requireAuthSSE, async (req, re
           return;
         }
 
-        // Look up ASIN in the directory
+        // Look up ASIN in the directory; live-scrape when PI catalog fields are configured
         const doc = await AsinDirectory.findOne({ asin }).lean();
-
-        // Build amazonData from stored document (no scraping).
-        // Shape must match fetchAmazonData() output so applyFieldConfigs works identically,
-        // including the `asin` property used in AI prompt placeholders ({{asin}}).
-        const directoryImages = doc?.images || [];
-        const processedDirectoryImages = await applyOverlayToScrapedImages(directoryImages);
-
-        const amazonData = doc ? {
-          asin,
-          title: doc.title || '',
-          brand: doc.brand || '',
-          price: doc.price || '',
-          description: doc.description || '',
-          review: doc.review || '',
-          images: processedDirectoryImages,
-          color: doc.color || '',
-          compatibility: doc.compatibility || '',
-          model: doc.model || '',
-          material: doc.material || '',
-          specialFeatures: doc.specialFeatures || '',
-          size: doc.size || '',
-          includedComponents: doc.includedComponents || ''
-        } : {
-          asin,
-          title: '', brand: '', price: '', description: '',
-          images: [], color: '', compatibility: '',
-          model: '', material: '', specialFeatures: '', size: '',
-          includedComponents: ''
-        };
-
-        const { coreFields, customFields, pricingCalculation } =
-          await applyFieldConfigs(amazonData, fieldConfigs, pricingConfig);
-        let customFieldsMerged = mergeReviewIntoCustomFields(
-          customFields,
-          coreFields,
-          template.customColumns
-        );
-
-        const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
-
-        if (template?.customColumns && template.customColumns.length > 0) {
-          template.customColumns.forEach(col => {
-            if (col.defaultValue && !customFieldsMerged[col.name]) {
-              customFieldsMerged[col.name] = col.defaultValue;
-            }
-          });
-        }
+        const amazonData = await resolveAmazonDataForPreview(asin, region, doc, fieldConfigs);
+        const autofill = await runTemplateAutofill(template, amazonData, fieldConfigs, pricingConfig);
+        const { coreFields, customFields, customFieldsMerged, mergedCoreFields, pricingCalculation } = autofill;
 
         const warnings = [];
         const validationErrors = [];
@@ -1470,9 +1498,7 @@ router.post('/autofill-from-asin', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Template not found' });
     }
     
-    const fieldConfigs = Array.isArray(template?.asinAutomation?.fieldConfigs)
-      ? template.asinAutomation.fieldConfigs
-      : [];
+    const fieldConfigs = resolveAutofillFieldConfigs(template);
     
     // 1.5. Get seller-specific pricing config if sellerId is provided
     let pricingConfig = template.pricingConfig;
@@ -1495,7 +1521,8 @@ router.post('/autofill-from-asin', requireAuth, async (req, res) => {
     const { coreFields, customFields, pricingCalculation } = await applyFieldConfigs(
       amazonData,
       fieldConfigs,
-      pricingConfig  // Use seller-specific or template default pricing config
+      pricingConfig,
+      resolveAutofillCustomColumns(template)
     );
     const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
     
@@ -1557,9 +1584,7 @@ router.post('/bulk-autofill-from-asins', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Template not found' });
     }
     
-    const fieldConfigs = Array.isArray(template?.asinAutomation?.fieldConfigs)
-      ? template.asinAutomation.fieldConfigs
-      : [];
+    const fieldConfigs = resolveAutofillFieldConfigs(template);
     
     // Get seller-specific pricing config if available
     let pricingConfig = template.pricingConfig;
@@ -1717,7 +1742,8 @@ router.post('/bulk-autofill-from-asins', requireAuth, async (req, res) => {
           const { coreFields, customFields, pricingCalculation } = await applyFieldConfigs(
             amazonData,
             fieldConfigs,
-            pricingConfig  // Use seller-specific or template default pricing config
+            pricingConfig,
+            resolveAutofillCustomColumns(template)
           );
           const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
           
@@ -2184,9 +2210,7 @@ router.post('/bulk-preview', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Template not found' });
     }
     
-    const fieldConfigs = Array.isArray(template?.asinAutomation?.fieldConfigs)
-      ? template.asinAutomation.fieldConfigs
-      : [];
+    const fieldConfigs = resolveAutofillFieldConfigs(template);
     
     // Get seller-specific pricing config if available
     let pricingConfig = template.pricingConfig;
@@ -2344,25 +2368,17 @@ router.post('/bulk-preview', requireAuth, async (req, res) => {
         
         // Apply field configurations
         const { coreFields, customFields, pricingCalculation } = 
-          await applyFieldConfigs(amazonData, fieldConfigs, pricingConfig);
+          await applyFieldConfigs(amazonData, fieldConfigs, pricingConfig, resolveAutofillCustomColumns(template));
         let customFieldsMerged = mergeReviewIntoCustomFields(
           customFields,
           coreFields,
-          template.customColumns
+          resolveAutofillCustomColumns(template)
         );
         
         // Apply template core field defaults as base layer (autofilled fields override these)
         const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
         
-        // Apply custom column default values for missing fields
-        if (template?.customColumns && template.customColumns.length > 0) {
-          template.customColumns.forEach(col => {
-            if (col.defaultValue && !customFieldsMerged[col.name]) {
-              customFieldsMerged[col.name] = col.defaultValue;
-              console.log(`✨ Applied column default for ${col.name}: ${col.defaultValue}`);
-            }
-          });
-        }
+        applyCustomColumnDefaults(customFieldsMerged, template?.customColumns);
         
         console.log(`✅ Generated fields for ${asin}:`);
         console.log(`   Core fields: ${Object.keys(mergedCoreFields).join(', ')}`);
@@ -3687,7 +3703,7 @@ router.get('/export-csv/:templateId', requireAuth, async (req, res) => {
     ];
     
     // Add custom column headers
-    const orderedUniqueCustomColumns = getOrderedUniqueCustomColumns(template.customColumns);
+    const orderedUniqueCustomColumns = getOrderedUniqueCustomColumns(resolveAutofillCustomColumns(template));
     const customHeaders = orderedUniqueCustomColumns.map(col => col.name);
     
     const allHeaders = [...coreHeaders, ...customHeaders];
@@ -3934,7 +3950,7 @@ router.post('/export-csv-direct/:templateId', requireAuth, async (req, res) => {
       'Shipping profile name', 'Return profile name', 'Payment profile name'
     ];
 
-    const orderedUniqueCustomColumns = getOrderedUniqueCustomColumns(template.customColumns);
+    const orderedUniqueCustomColumns = getOrderedUniqueCustomColumns(resolveAutofillCustomColumns(template));
     const customHeaders = orderedUniqueCustomColumns.map(col => col.name);
 
     const allHeaders = [...coreHeaders, ...customHeaders];
@@ -4251,7 +4267,7 @@ router.get('/re-download-batch/:templateId/:batchId', requireAuth, async (req, r
     ];
     
     // Add custom column headers
-    const orderedUniqueCustomColumns = getOrderedUniqueCustomColumns(template.customColumns);
+    const orderedUniqueCustomColumns = getOrderedUniqueCustomColumns(resolveAutofillCustomColumns(template));
     const customHeaders = orderedUniqueCustomColumns.map(col => col.name);
     
     const allHeaders = [...coreHeaders, ...customHeaders];

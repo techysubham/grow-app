@@ -21,6 +21,7 @@ import CoreFieldDefaultsForm from '../../components/CoreFieldDefaultsForm.jsx';
 import PricingConfigSection from '../../components/PricingConfigSection.jsx';
 import { createDefaultCoreFieldDefaults } from '../../constants/defaultDescriptionTemplate.js';
 import { DEFAULT_TEMPLATE_PRICING_CONFIG } from '../../constants/pricingDefaults.js';
+import { buildCustomColumnFieldConfig } from '../../constants/customColumnAmazonMapping.js';
 
 // ── Marketplace helpers (derived from customActionField) ─────────────────
 function extractMarketplace(customActionField) {
@@ -160,17 +161,7 @@ function customColumnHasDefault(column) {
 }
 
 function createCustomAsinFieldConfig(column) {
-  const label = column.displayName || column.name;
-  return {
-    fieldType: 'custom',
-    ebayField: column.name,
-    source: 'ai',
-    promptTemplate: `Write a concise value for the eBay custom field "${label}" using the Amazon product details.`,
-    amazonField: '',
-    transform: 'none',
-    enabled: true,
-    defaultValue: ''
-  };
+  return buildCustomColumnFieldConfig(column);
 }
 
 /** Custom columns without a template default must be filled via ASIN Auto-Fill. */
@@ -321,10 +312,22 @@ export default function ManageTemplatesPage() {
   const fetchTemplates = async () => {
     try {
       setLoading(true);
-      const { data } = await api.get('/listing-templates');
+      setError('');
+      const { data } = await api.get('/listing-templates', { timeout: 60000 });
       setTemplates(data || []);
     } catch (err) {
-      setError('Failed to fetch templates');
+      const apiMsg = err?.response?.data?.error;
+      const status = err?.response?.status;
+      const detail =
+        apiMsg ||
+        (err?.code === 'ECONNABORTED' ? 'Request timed out — API may be slow or unreachable.' : null) ||
+        err?.message ||
+        'Unknown error';
+      setError(
+        status
+          ? `Failed to fetch templates (${status}): ${detail}`
+          : `Failed to fetch templates: ${detail}`
+      );
       console.error(err);
     } finally {
       setLoading(false);
@@ -765,7 +768,20 @@ export default function ManageTemplatesPage() {
     <Box>
       <Typography variant="h6" sx={{ mb: 2 }}>Manage Listing Templates</Typography>
 
-      {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>{error}</Alert>}
+      {error && (
+        <Alert
+          severity="error"
+          sx={{ mb: 2 }}
+          onClose={() => setError('')}
+          action={
+            <Button color="inherit" size="small" onClick={fetchTemplates} disabled={loading}>
+              Retry
+            </Button>
+          }
+        >
+          {error}
+        </Alert>
+      )}
       {success && <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccess('')}>{success}</Alert>}
 
       <Paper>
@@ -1125,7 +1141,7 @@ export default function ManageTemplatesPage() {
                     <>
                       <Alert severity="info">
                         Configure which eBay fields auto-populate when users enter an ASIN. Expand each field row:
-                        use Direct Mapping to copy Amazon fields (compatibility, material, size, images, etc.), or AI Generated for prompts.
+                        use Direct Mapping for title, brand, description, and images (plus any columns saved under Amazon Product Info Columns), or AI Generated for prompts.
                         Seller template overrides use the same Amazon field list.
                       </Alert>
                       

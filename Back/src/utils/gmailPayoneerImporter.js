@@ -93,6 +93,76 @@ async function resolveBankAccountFromCustomerId(customerId) {
     return BankAccount.findOne({ payoneerId: key }).select('_id name payoneerId sellers').lean();
 }
 
+/** Match bank from Payoneer greeting text, e.g. "SHREE JAGANNATH ENTERPRISE Shubhankar Gan". */
+export async function resolveBankAccountFromGreeting(greetingName) {
+    const greeting = normalizeMatchText(greetingName);
+    if (!greeting) return null;
+
+    const banks = await BankAccount.find({}).select('_id name payoneerId sellers').lean();
+    let best = null;
+    let bestLen = 0;
+
+    for (const bank of banks) {
+        const bankName = normalizeMatchText(bank.name);
+        if (!bankName || bankName.length < 3) continue;
+        if (greeting.includes(bankName) && bankName.length > bestLen) {
+            bestLen = bankName.length;
+            best = bank;
+        }
+    }
+
+    return best;
+}
+
+async function resolveBankAccountForMail({ customerId, greetingName }) {
+    const fromCustomer = await resolveBankAccountFromCustomerId(customerId);
+    if (fromCustomer) return fromCustomer;
+    return resolveBankAccountFromGreeting(greetingName);
+}
+
+function sellerFromId(sellerList, sellerId) {
+    if (!sellerId) return null;
+    return sellerList.find((s) => String(s._id) === String(sellerId)) || null;
+}
+
+function resolveSellerFromBankAndGreeting(greetingName, sellerList, bankAccount) {
+    if (!bankAccount) return null;
+
+    const greeting = normalizeMatchText(greetingName);
+    const bankName = normalizeMatchText(bankAccount.name);
+    const linked = sellerList.filter((s) => sellerMatchesBankSellersField(bankAccount.sellers, s));
+    if (!linked.length) return null;
+    if (linked.length === 1) return linked[0];
+
+    let remainder = greeting;
+    if (bankName && greeting.includes(bankName)) {
+        remainder = greeting.replace(bankName, '').replace(/\s+/g, ' ').trim();
+    }
+
+    if (remainder) {
+        for (const seller of linked) {
+            const u = normalizeMatchText(seller.user?.username || seller.user?.email);
+            if (!u) continue;
+            if (remainder.includes(u) || u.includes(remainder)) return seller;
+        }
+
+        const tokens = String(bankAccount.sellers || '')
+            .split(/[,;]+/)
+            .map((t) => normalizeMatchText(t))
+            .filter((t) => t.length >= 3);
+        for (const token of tokens) {
+            if (!remainder.includes(token) && !token.includes(remainder)) continue;
+            const matched = linked.find((s) => {
+                const u = normalizeMatchText(s.user?.username || s.user?.email);
+                return u && (u.includes(token) || token.includes(u));
+            });
+            if (matched) return matched;
+        }
+    }
+
+    return linked[0];
+}
+
 async function findMatchingFeedRow({ amountUsd, sellerId, bankAccountId }) {
     const cache = await PayoneerFeedCache.findById(PAYONEER_FEED_CACHE_ID).lean();
     const rows = Array.isArray(cache?.rows) ? cache.rows : [];
@@ -249,9 +319,28 @@ async function createPayoneerRecordFromGmail({
     return { ok: true, record, created: true };
 }
 
+function resolveSellerForPayoneerMatch({
+    greetingName,
+    bankAccount,
+    sellerList,
+    payoneerRecord,
+    feedRow,
+}) {
+    const fromRecord = sellerFromId(sellerList, payoneerRecord?.store);
+    if (fromRecord) return fromRecord;
+
+    const fromFeed = sellerFromId(sellerList, feedRow?.sellerId);
+    if (fromFeed) return fromFeed;
+
+    const fromGreeting = resolveSellerFromGreeting(greetingName, sellerList, bankAccount);
+    if (fromGreeting) return fromGreeting;
+
+    return resolveSellerFromBankAndGreeting(greetingName, sellerList, bankAccount);
+}
+
 /**
  * Apply parsed Payoneer withdrawal email fields to a matching Payoneer sheet row.
- * Match: USD amount + store name from greeting ("Dear …,").
+ * Match: USD amount + bank account (from customer ID or greeting) + store when available.
  */
 export async function applyParsedMailToPayoneerSheet({
     fields,
@@ -273,6 +362,8 @@ export async function applyParsedMailToPayoneerSheet({
         exchangeRate: fields?.exchangeRate ?? null,
         bankDepositInr: fields?.bankDepositInr ?? null,
         greetingName: fields?.greetingName || '',
+        bankAccountName: null,
+        matchedBy: null,
     };
 
     if (!fields?.amountUsd) {
@@ -283,39 +374,91 @@ export async function applyParsedMailToPayoneerSheet({
         report.skipReason = 'Could not parse exchange rate or bank deposit from email';
         return report;
     }
-    if (!fields.greetingName) {
-        report.skipReason = 'Could not parse store name from greeting (Dear …,)';
+    if (!fields.greetingName && !fields.customerId) {
+        report.skipReason = 'Could not parse greeting (Dear …,) or Customer ID from email';
         return report;
     }
 
     const sellerList = sellers || (await loadSellersWithUsers());
-    const bankAccount = await resolveBankAccountFromCustomerId(fields.customerId);
-    const seller = resolveSellerFromGreeting(fields.greetingName, sellerList, bankAccount);
-    if (!seller) {
-        report.skipReason = `No store matched greeting "${fields.greetingName}"`;
-        return report;
+    const bankAccount = await resolveBankAccountForMail({
+        customerId: fields.customerId,
+        greetingName: fields.greetingName,
+    });
+    const bankId = bankAccount?._id || null;
+    report.bankAccountName = bankAccount?.name || null;
+
+    let recordDoc = null;
+    if (bankId) {
+        recordDoc = await findMatchingPayoneerRecord({
+            amountUsd: fields.amountUsd,
+            sellerId: null,
+            bankAccountId: bankId,
+        });
+        if (recordDoc) report.matchedBy = 'bank_amount';
     }
 
-    report.storeUsername = seller.user?.username || seller.user?.email || '';
+    let feedRow =
+        !recordDoc && bankId
+            ? await findMatchingFeedRow({
+                  amountUsd: fields.amountUsd,
+                  sellerId: null,
+                  bankAccountId: bankId,
+              })
+            : null;
+    if (feedRow && !report.matchedBy) report.matchedBy = 'bank_amount_feed';
 
-    const bankId = bankAccount?._id || null;
-    let recordDoc = await findMatchingPayoneerRecord({
-        amountUsd: fields.amountUsd,
-        sellerId: seller._id,
-        bankAccountId: bankId,
+    const seller = resolveSellerForPayoneerMatch({
+        greetingName: fields.greetingName,
+        bankAccount,
+        sellerList,
+        payoneerRecord: recordDoc,
+        feedRow,
     });
 
-    const feedRow =
-        !recordDoc &&
-        (await findMatchingFeedRow({
+    if (!recordDoc && seller) {
+        recordDoc = await findMatchingPayoneerRecord({
             amountUsd: fields.amountUsd,
             sellerId: seller._id,
             bankAccountId: bankId,
-        }));
+        });
+        if (recordDoc && !report.matchedBy) report.matchedBy = 'store_amount';
+    }
+
+    if (!feedRow && seller) {
+        feedRow = await findMatchingFeedRow({
+            amountUsd: fields.amountUsd,
+            sellerId: seller._id,
+            bankAccountId: bankId,
+        });
+        if (feedRow && !report.matchedBy) report.matchedBy = 'store_amount_feed';
+    }
+
+    if (!seller && !bankAccount) {
+        report.skipReason = fields.greetingName
+            ? `No bank or store matched greeting "${fields.greetingName}"`
+            : 'No bank matched Customer ID and no greeting to match bank name';
+        return report;
+    }
+
+    const resolvedSeller =
+        seller ||
+        sellerFromId(sellerList, recordDoc?.store) ||
+        sellerFromId(sellerList, feedRow?.sellerId);
+
+    if (!resolvedSeller) {
+        report.skipReason = bankAccount
+            ? `Bank "${bankAccount.name}" matched but no linked store for amount $${fields.amountUsd}. ` +
+              'Link sellers on the bank account or refresh eBay payouts on Payoneer Sheet.'
+            : `No store matched greeting "${fields.greetingName}"`;
+        return report;
+    }
+
+    report.storeUsername = resolvedSeller.user?.username || resolvedSeller.user?.email || '';
 
     if (!recordDoc && !feedRow) {
+        const bankLabel = bankAccount?.name ? `bank "${bankAccount.name}"` : `store "${report.storeUsername}"`;
         report.skipReason =
-            `No Payoneer row or eBay payout for store "${report.storeUsername}" with amount $${fields.amountUsd}. ` +
+            `No Payoneer row or eBay payout for ${bankLabel} with amount $${fields.amountUsd}. ` +
             'Click Refresh eBay payouts on Payoneer Sheet, or Save row first.';
         return report;
     }
@@ -330,7 +473,7 @@ export async function applyParsedMailToPayoneerSheet({
     if (!recordDoc && feedRow) {
         const created = await createPayoneerRecordFromGmail({
             fields,
-            seller,
+            seller: resolvedSeller,
             bankAccount,
             feedRow,
         });

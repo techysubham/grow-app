@@ -4,6 +4,15 @@ import { processImagePlaceholders } from './imageReplacer.js';
 import { scrapeAmazonProductWithScraperAPI } from './scraperApiProduct.js';
 import AmazonPiSourceColumn from '../models/AmazonPiSourceColumn.js';
 import { augmentAmazonDataWithPiColumns } from './amazonPiSourceColumnUtils.js';
+import {
+  fillMissingCustomColumnsFromAmazon,
+  inferAmazonFieldForCustomColumn,
+  isCustomFieldConfig,
+  isEmptyCustomFieldValue,
+  readAmazonFieldByKey,
+  resolveCustomColumnValue,
+  toPlainFieldConfig,
+} from './customColumnAmazonMapping.js';
 import { trackApiUsage } from './apiUsageTracker.js';
 import { getCachedAsinData, setCachedAsinData } from './asinCache.js';
 import { createEbayImageWithOverlay } from './imageProcessor.js';
@@ -204,10 +213,23 @@ export async function fetchAmazonData(asin, region = 'US') {
  * @param {Object} pricingConfig - Optional pricing configuration for startPrice calculation
  * @returns {Object} { coreFields, customFields, pricingCalculation }
  */
-export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig = null) {
+function promoteMisroutedCustomFields(coreFields, customFields) {
+  for (const key of Object.keys(coreFields)) {
+    if (!/^C:/i.test(key)) continue;
+    if (!customFields[key] && coreFields[key]) {
+      customFields[key] = coreFields[key];
+    }
+    delete coreFields[key];
+  }
+}
+
+export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig = null, customColumns = []) {
   const coreFields = {};
   const customFields = {};
   let pricingCalculation = null;
+
+  const plainFieldConfigs = (Array.isArray(fieldConfigs) ? fieldConfigs : []).map(toPlainFieldConfig);
+  const plainCustomColumns = (Array.isArray(customColumns) ? customColumns : []).map(toPlainFieldConfig);
 
   const piSourceColumns = await loadAmazonPiSourceColumnsForAutofill();
   const amazonDataForMapping =
@@ -215,8 +237,8 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
   
   // DEBUG: Log all field configs received
   console.log(`\n🔍 [ASIN: ${amazonData.asin}] === FIELD CONFIG DEBUG START ===`);
-  console.log(`📋 Total field configs received: ${fieldConfigs.length}`);
-  console.log(`Field configs:`, JSON.stringify(fieldConfigs.map(c => ({
+  console.log(`📋 Total field configs received: ${plainFieldConfigs.length}`);
+  console.log(`Field configs:`, JSON.stringify(plainFieldConfigs.map(c => ({
     ebayField: c.ebayField,
     fieldType: c.fieldType,
     source: c.source,
@@ -275,7 +297,7 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
   const aiConfigs = [];
   const disabledConfigs = [];
   
-  for (const config of fieldConfigs) {
+  for (const config of plainFieldConfigs) {
     if (!config.enabled) {
       disabledConfigs.push(config);
     } else if (config.source === 'direct') {
@@ -293,7 +315,7 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
   console.log(`  ⏸️  Disabled: ${disabledConfigs.length} (${disabledConfigs.map(c => c.ebayField).join(', ')})`);
   
   // Check if pricing calculator will override startPrice field config
-  const startPriceConfig = fieldConfigs.find(c => c.ebayField === 'startPrice' && c.enabled);
+  const startPriceConfig = plainFieldConfigs.find(c => c.ebayField === 'startPrice' && c.enabled);
   if (pricingConfig?.enabled && startPriceConfig) {
     console.log(`ℹ️ [ASIN: ${amazonData.asin}] Pricing calculator enabled - will override startPrice field config (${startPriceConfig.source})`);
   }
@@ -301,26 +323,47 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
   // Process disabled configs (apply default values immediately)
   for (const config of disabledConfigs) {
     if (config.defaultValue) {
-      const targetObject = config.fieldType === 'custom' ? customFields : coreFields;
+      const targetObject = isCustomFieldConfig(config) ? customFields : coreFields;
       targetObject[config.ebayField] = config.defaultValue;
       console.log(`Applied default value for ${config.ebayField}: ${config.defaultValue}`);
     }
   }
   
+  function resolveAmazonFieldKey(config) {
+    if (config.amazonField) return config.amazonField;
+    if (isCustomFieldConfig(config)) {
+      return inferAmazonFieldForCustomColumn(config.ebayField);
+    }
+    return null;
+  }
+
+  function trimCustomFieldValue(value, ebayField) {
+    if (value == null || value === '') return value;
+    const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    if (ebayField === 'title') return text.length > 80 ? text.slice(0, 80) : text;
+    if (ebayField === 'description' || ebayField === 'review') return text;
+    return text.length > 60 ? text.slice(0, 60) : text;
+  }
+
   // Process direct mapping configs (fast, no API calls)
   for (const config of directConfigs) {
-    const targetObject = config.fieldType === 'custom' ? customFields : coreFields;
+    const targetObject = isCustomFieldConfig(config) ? customFields : coreFields;
     
     try {
-      let value = amazonDataForMapping[config.amazonField];
+      const amazonKey = resolveAmazonFieldKey(config);
+      let value = amazonKey ? readAmazonFieldByKey(amazonKey, amazonDataForMapping) : undefined;
 
-      // Plain objects (e.g. full `productInformation`) → JSON text for eBay / custom fields
-      if (value != null && typeof value === 'object' && !Array.isArray(value)) {
-        value = JSON.stringify(value, null, 2);
+      if (isCustomFieldConfig(config) && isEmptyCustomFieldValue(value)) {
+        const fallback = resolveCustomColumnValue(config.ebayField, amazonDataForMapping, config);
+        if (fallback) value = fallback;
       }
 
       // Apply transformations
       value = applyTransform(value, config.transform);
+
+      if (isCustomFieldConfig(config)) {
+        value = trimCustomFieldValue(value, config.ebayField);
+      }
       
       // Apply image placeholder replacement for description field
       if (config.ebayField === 'description' && typeof value === 'string') {
@@ -335,7 +378,7 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
         console.log(`Used default value fallback for ${config.ebayField}: ${config.defaultValue}`);
       }
       
-      const fieldLabel = config.fieldType === 'custom' ? `[Custom] ${config.ebayField}` : config.ebayField;
+      const fieldLabel = isCustomFieldConfig(config) ? `[Custom] ${config.ebayField}` : config.ebayField;
       const filled = targetObject[config.ebayField];
       const filledPreview = typeof filled === 'string' ? filled.substring(0, 50) : String(filled ?? '').substring(0, 50);
       console.log(`Auto-filled ${fieldLabel}: ${filledPreview}...`);
@@ -345,6 +388,8 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
       targetObject[config.ebayField] = config.defaultValue || '';
     }
   }
+
+  promoteMisroutedCustomFields(coreFields, customFields);
   
   // Process AI configs in parallel for maximum speed
   if (aiConfigs.length > 0) {
@@ -354,9 +399,20 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
       try {
         console.log(`\n  🔹 Processing AI field: ${config.ebayField} (${config.fieldType})`);
         console.log(`    📝 Original prompt template: "${config.promptTemplate}"`);
+
+        if (isCustomFieldConfig(config)) {
+          let directValue = resolveCustomColumnValue(config.ebayField, amazonDataForMapping, config);
+          if (directValue) {
+            directValue = applyTransform(directValue, config.transform || 'none');
+            directValue = trimCustomFieldValue(directValue, config.ebayField);
+            console.log(`    ↪ Direct fill for ${config.ebayField} from Amazon data`);
+            return { config, value: directValue, success: true };
+          }
+        }
+
         const fieldKeyLower = String(config.ebayField || '').toLowerCase();
         const customColumnWantsReviewExtract =
-          config.fieldType === 'custom'
+          isCustomFieldConfig(config)
           && /model|year|compat|series|size|fit|watch/i.test(String(config.ebayField || ''));
         let aiPlaceholderData = placeholderData;
         if (fieldKeyLower === 'description' || fieldKeyLower.includes('description')) {
@@ -380,12 +436,33 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
 
         const templateRaw = String(config.promptTemplate || '').trim();
         let processedPrompt = replacePlaceholders(templateRaw, aiPlaceholderData);
+        if (isCustomFieldConfig(config) && !/\{[a-z]/i.test(templateRaw)) {
+          const label = config.ebayField || 'custom field';
+          processedPrompt = replacePlaceholders(
+            [
+              `Output ONLY the value for eBay custom field "${label}" (one short line, max 60 characters).`,
+              'Use facts from the Amazon data below. If unknown, output "Does Not Apply".',
+              '',
+              'Title: {title}',
+              'Brand: {brand}',
+              'Color: {color}',
+              'Compatibility: {compatibility}',
+              'Model: {model}',
+              'Material: {material}',
+              'Size: {size}',
+              'Features: {specialFeatures}',
+              'Description: {description}',
+            ].join('\n'),
+            aiPlaceholderData
+          );
+          console.log(`    ⚠️ Generic custom-column prompt — using Amazon data template for ${label}.`);
+        }
         const usesReviewInPrompt =
           /\{review\}|\{customerreviews\}/i.test(processedPrompt)
           || /\{review\}|\{customerreviews\}/i.test(templateRaw);
         // Empty prompts produce empty/low-quality GPT output; defaults keep bulk preview usable.
         if (
-          config.fieldType === 'custom'
+          isCustomFieldConfig(config)
           && !templateRaw
           && (usesReviewInPrompt || customColumnWantsReviewExtract)
           && String(aiPlaceholderData.review || '').trim()
@@ -511,8 +588,22 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
     
     // Apply AI results to target objects
     for (const result of aiResults) {
-      const targetObject = result.config.fieldType === 'custom' ? customFields : coreFields;
-      targetObject[result.config.ebayField] = result.value;
+      const targetObject = isCustomFieldConfig(result.config) ? customFields : coreFields;
+      let finalValue = result.value;
+      if (isCustomFieldConfig(result.config) && isEmptyCustomFieldValue(finalValue)) {
+        const scraped = resolveCustomColumnValue(
+          result.config.ebayField,
+          amazonDataForMapping,
+          result.config
+        );
+        if (scraped) {
+          finalValue = trimCustomFieldValue(
+            applyTransform(scraped, result.config.transform || 'none'),
+            result.config.ebayField
+          );
+        }
+      }
+      targetObject[result.config.ebayField] = finalValue;
       
       // Critical check for title field (required for listing creation)
       if (result.config.ebayField === 'title' && !result.value) {
@@ -525,7 +616,7 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
         console.log(`[ASIN: ${amazonData.asin}] Used default value fallback for ${result.config.ebayField}: ${result.config.defaultValue}`);
       }
       
-      const fieldLabel = result.config.fieldType === 'custom' ? `[Custom] ${result.config.ebayField}` : result.config.ebayField;
+      const fieldLabel = isCustomFieldConfig(result.config) ? `[Custom] ${result.config.ebayField}` : result.config.ebayField;
       const status = result.success ? '✅' : '⚠️';
       console.log(`${status} [ASIN: ${amazonData.asin}] Auto-filled ${fieldLabel}: ${targetObject[result.config.ebayField]?.substring(0, 50)}...`);
     }
@@ -595,6 +686,14 @@ export async function applyFieldConfigs(amazonData, fieldConfigs, pricingConfig 
     }
   }
   
+  promoteMisroutedCustomFields(coreFields, customFields);
+  fillMissingCustomColumnsFromAmazon(
+    plainCustomColumns,
+    amazonDataForMapping,
+    customFields,
+    plainFieldConfigs
+  );
+
   // DEBUG: Final results summary
   console.log(`\n✅ [ASIN: ${amazonData.asin}] === FIELD CONFIG DEBUG END ===`);
   console.log(`📝 Final results:`);

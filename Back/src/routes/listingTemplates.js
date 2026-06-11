@@ -283,6 +283,14 @@ router.delete('/:id/bulk-reset-overrides', requireAuth, async (req, res) => {
   }
 });
 
+function normalizeTemplateRecord(template) {
+  const normalized = { ...template };
+  normalized.asinAutomation = normalizeAsinAutomation(normalized?.asinAutomation || {});
+  normalized.customColumns = mergeDefaultCustomColumns(normalized.customColumns || []);
+  normalized.coreFieldDefaults = mergeDefaultCoreFieldDefaults(normalized.coreFieldDefaults || {});
+  return normalized;
+}
+
 // Get all templates
 router.get('/', requireAuth, async (req, res) => {
   try {
@@ -291,21 +299,24 @@ router.get('/', requireAuth, async (req, res) => {
     if (rangeId) filter.rangeId = rangeId;
     if (listProductId) filter.listProductId = listProductId;
     const templates = await ListingTemplate.find(filter)
-      .populate('createdBy', 'name email')
-      .sort({ createdAt: -1 });
+      .populate('createdBy', 'username email')
+      .sort({ createdAt: -1 })
+      .lean();
 
-    const normalizedTemplates = templates.map((template) => {
-      const normalized = template.toObject();
-      normalized.asinAutomation = normalizeAsinAutomation(normalized?.asinAutomation || {});
-      normalized.customColumns = mergeDefaultCustomColumns(normalized.customColumns || []);
-      normalized.coreFieldDefaults = mergeDefaultCoreFieldDefaults(normalized.coreFieldDefaults || {});
-      return normalized;
-    });
+    const normalizedTemplates = [];
+    for (const template of templates) {
+      try {
+        normalizedTemplates.push(normalizeTemplateRecord(template));
+      } catch (normalizeErr) {
+        console.error(`Error normalizing template ${template?._id}:`, normalizeErr);
+        normalizedTemplates.push(template);
+      }
+    }
 
     res.json(normalizedTemplates);
   } catch (error) {
     console.error('Error fetching templates:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message || 'Failed to fetch templates' });
   }
 });
 

@@ -14,8 +14,8 @@ import { scrapeAmazonPriceWithScraperAPI } from './scraperApiPrice.js';
 const SCRAPER_API_BASE = 'https://api.scraperapi.com/structured/amazon/product/v1';
 const SCRAPINGDOG_PRODUCT_BASE = 'https://api.scrapingdog.com/amazon/product';
 
-// Concurrency limiter - use 15 of 20 available concurrent requests
-const CONCURRENT_REQUESTS = parseInt(process.env.SCRAPER_API_CONCURRENT) || 15;
+// Concurrency limiter — ScrapingDog Lite allows 5; ScraperAPI plans often allow more
+const CONCURRENT_REQUESTS = parseInt(process.env.SCRAPER_API_CONCURRENT, 10) || 5;
 const limit = pLimit(CONCURRENT_REQUESTS);
 
 export function getScraperProvider() {
@@ -64,6 +64,16 @@ function enrichScraperHttpError(err, provider) {
   if (status === 404 && provider === 'scrapingdog') {
     const wrapped = new Error(
       `Amazon product not found for this ASIN/region (ScrapingDog 404). Try another ASIN or region.${suffix}`
+    );
+    wrapped.response = err.response;
+    wrapped.status = status;
+    return wrapped;
+  }
+
+  if (status === 429) {
+    const wrapped = new Error(
+      `${provider === 'scrapingdog' ? 'ScrapingDog' : 'ScraperAPI'} rate limit (429): too many concurrent requests. ` +
+      `Lower SCRAPER_API_CONCURRENT on the API server (try 3–5 for ScrapingDog Lite) or upgrade your plan, then retry in a minute.${suffix}`
     );
     wrapped.response = err.response;
     wrapped.status = status;
@@ -239,7 +249,7 @@ function normalizeScrapingDogProduct(sd) {
     name: sd?.title || sd?.name || '',
     brand: sd?.brand || '',
     feature_bullets: sd?.feature_bullets || [],
-    product_information: sd?.product_information || {},
+    product_information: normalizeProductInformationKeys(sd?.product_information || {}),
     images: sd?.images || [],
     high_res_images: sd?.images || [],
     pricing: price,
@@ -354,6 +364,62 @@ function normalizeValue(value, separator = ', ') {
   }
   if (typeof value === 'number') return String(value);
   return String(value).trim();
+}
+
+/** "Screen Size" / screenSize → screen_size so ScrapingDog + ScraperAPI keys align. */
+function keyToSnakeCase(key) {
+  return String(key || '')
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+/** Add snake_case aliases for human-readable Amazon product_information keys. */
+export function normalizeProductInformationKeys(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = { ...raw };
+  for (const [key, value] of Object.entries(raw)) {
+    const snake = keyToSnakeCase(key);
+    if (snake && out[snake] === undefined) out[snake] = value;
+  }
+  return out;
+}
+
+function getProductTextBlob(data) {
+  const bullets = Array.isArray(data?.feature_bullets) ? data.feature_bullets.join(' ') : '';
+  return normalizeValue(
+    [data?.name, data?.small_description, data?.full_description, bullets].filter(Boolean).join(' ')
+  );
+}
+
+function extractPhoneModelFromText(text) {
+  const t = normalizeValue(text);
+  if (!t) return '';
+
+  const forCase = t.match(
+    /\bfor\s+(iPhone\s+\d{1,2}(?:\s+(?:Pro\s+Max|Pro|Plus|mini|e))?)\s+(?:Case|Cover|Cases|Covers)\b/i
+  );
+  if (forCase?.[1]) return forCase[1].trim();
+
+  const iphone = t.match(/\biPhone\s+\d{1,2}(?:\s+(?:Pro\s+Max|Pro|Plus|mini|e))?\b/i);
+  if (iphone) return iphone[0];
+
+  const galaxy = t.match(/\bGalaxy\s+[A-Z]\d{1,2}(?:\s+(?:Ultra|Plus|FE))?\b/i);
+  if (galaxy) return galaxy[0];
+
+  return '';
+}
+
+function extractScreenSizeFromText(text) {
+  const t = normalizeValue(text);
+  if (!t) return '';
+  const inchMatch = t.match(/\b(\d+(?:\.\d+)?)\s*(?:-|–)?\s*(?:inch|inches|in)\b/i);
+  if (inchMatch) return `${inchMatch[1]} Inches`;
+  return '';
 }
 
 /**
@@ -505,6 +571,9 @@ function extractCompatibility(data) {
     return String(data.product_information.compatibility);
   }
 
+  const phoneModel = extractPhoneModelFromText(data.name || '');
+  if (phoneModel) return phoneModel;
+
   // Title fallback (common for automotive accessories)
   const nameText = normalizeValue(data.name || '');
   const compatibleWithMatch = nameText.match(/compatible with\s+(.+?)(?:,|\(|-|\||$)/i);
@@ -544,6 +613,9 @@ function extractModel(data) {
     return String(data.product_information.manufacturer_part_number);
   }
 
+  const fromTitle = extractPhoneModelFromText(getProductTextBlob(data));
+  if (fromTitle) return fromTitle;
+
   return '';
 }
 
@@ -574,7 +646,7 @@ function extractMaterial(data) {
     data.small_description || data.full_description || data.name || ''
   ).toLowerCase();
   const materialMatch = materialText.match(
-    /\b(leather|genuine leather|crazy horse leather|oxford fabric|nylon|silicone|rubber|stainless steel|canvas|metal|carbon fiber|fiberglass)\b/
+    /\b(leather|genuine leather|crazy horse leather|oxford fabric|nylon|silicone|rubber|stainless steel|canvas|metal|carbon fiber|fiberglass|polycarbonate|thermoplastic polyurethane|thermoplastic|tpu|hard plastic|matte finish|matte)\b/i
   );
   if (materialMatch) {
     return materialMatch[0];
@@ -630,6 +702,11 @@ function extractSpecialFeatures(data) {
     if (pi.gearbox_ratio) fp.push(`Gear ratio: ${pi.gearbox_ratio}`);
     if (pi.hand_orientation) fp.push(`Hand: ${pi.hand_orientation}`);
     if (fp.length) return fp.join(' | ');
+  }
+
+  const bullets = data.feature_bullets || [];
+  if (Array.isArray(bullets) && bullets.length > 0) {
+    return normalizeValue(bullets.slice(0, 4), ' | ');
   }
 
   return '';
@@ -691,7 +768,9 @@ function extractFormFactor(data) {
 
 function extractScreenSize(data) {
   if (!data) return '';
-  return normalizeValue(data.product_information?.screen_size);
+  const fromPi = normalizeValue(data.product_information?.screen_size);
+  if (fromPi) return fromPi;
+  return extractScreenSizeFromText(getProductTextBlob(data));
 }
 
 function extractBandColor(data) {
@@ -1124,9 +1203,9 @@ export async function scrapeAmazonProductWithScraperAPI(asin, region = 'US', ret
         let productInformation = {};
         if (piSrc != null && typeof piSrc === 'object' && !Array.isArray(piSrc)) {
           try {
-            productInformation = JSON.parse(JSON.stringify(piSrc));
+            productInformation = normalizeProductInformationKeys(JSON.parse(JSON.stringify(piSrc)));
           } catch {
-            productInformation = { ...piSrc };
+            productInformation = normalizeProductInformationKeys({ ...piSrc });
           }
         }
 
