@@ -1148,28 +1148,69 @@ export default function AffiliateOrdersPage() {
     }, [dateFilter, excludeLowValue, excludeCarryForwards, showDoneEntries, marketplace]);
 
 
+    const ordersFetchGenerationRef = useRef(0);
+
+    const buildDailyOrdersParams = useCallback((page, limit, sellerId = '') => ({
+        page,
+        limit,
+        ...(dateFilter.mode === 'single'
+            ? { date: dateFilter.single }
+            : {
+                ...(dateFilter.from ? { startDate: dateFilter.from } : {}),
+                ...(dateFilter.to ? { endDate: dateFilter.to } : {}),
+            }),
+        excludeLowValue: excludeLowValue ? 'true' : 'false',
+        excludeCarryForwards: excludeCarryForwards ? 'true' : 'false',
+        includeDone: showDoneEntries ? 'true' : 'false',
+        ...(sellerId ? { sellerId } : {}),
+        ...(marketplace ? { marketplace } : {}),
+    }), [dateFilter, excludeLowValue, excludeCarryForwards, showDoneEntries, marketplace]);
+
     const fetchOrders = useCallback(async () => {
+        const generation = ++ordersFetchGenerationRef.current;
         setOrdersLoading(true);
         setOrdersError('');
+
         try {
+            if (selectedSeller) {
+                const fetched = [];
+                let page = 1;
+                let apiTotal = 0;
+                const pageSize = 200;
+
+                while (true) {
+                    const response = await api.get('/affiliate-orders/daily', {
+                        timeout: 90000,
+                        params: buildDailyOrdersParams(page, pageSize, selectedSeller),
+                    });
+                    if (generation !== ordersFetchGenerationRef.current) return;
+
+                    const payload = response.data || {};
+                    const rows = Array.isArray(payload) ? payload : (payload.orders || []);
+                    const pagination = payload.pagination || null;
+                    apiTotal = pagination?.totalOrders ?? rows.length;
+
+                    if (!rows.length) break;
+                    fetched.push(...rows.map(normalizeAffiliateOrder));
+
+                    if (!pagination || page >= (pagination.totalPages || 1)) break;
+                    page += 1;
+                }
+
+                if (generation !== ordersFetchGenerationRef.current) return;
+
+                setOrders(fetched);
+                setTotalOrders(apiTotal || fetched.length);
+                setTotalPages(Math.max(1, Math.ceil((apiTotal || fetched.length) / AFFILIATE_ORDERS_PER_PAGE)));
+                return;
+            }
+
             const response = await api.get('/affiliate-orders/daily', {
                 timeout: 90000,
-                params: {
-                    page: currentPage,
-                    limit: AFFILIATE_ORDERS_PER_PAGE,
-                    ...(dateFilter.mode === 'single'
-                        ? { date: dateFilter.single }
-                        : {
-                            ...(dateFilter.from ? { startDate: dateFilter.from } : {}),
-                            ...(dateFilter.to ? { endDate: dateFilter.to } : {}),
-                        }),
-                    excludeLowValue: excludeLowValue ? 'true' : 'false',
-                    excludeCarryForwards: excludeCarryForwards ? 'true' : 'false',
-                    includeDone: showDoneEntries ? 'true' : 'false',
-                    ...(selectedSeller ? { sellerId: selectedSeller } : {}),
-                    ...(marketplace ? { marketplace } : {}),
-                }
+                params: buildDailyOrdersParams(currentPage, AFFILIATE_ORDERS_PER_PAGE),
             });
+            if (generation !== ordersFetchGenerationRef.current) return;
+
             const payload = response.data || {};
             const rows = Array.isArray(payload) ? payload : (payload.orders || []);
             const pagination = payload.pagination || null;
@@ -1182,86 +1223,72 @@ export default function AffiliateOrdersPage() {
                 setTotalOrders(rows.length);
             }
 
-            // If viewing all sellers (no single seller filter), fetch missing orders per seller
-            // so each seller section can show all their orders instead of only the paginated subset.
-            if (!selectedSeller) {
-                (async () => {
-                    try {
-                        // Build current counts per seller id from returned rows
-                        const currentCountsById = rows.reduce((acc, o) => {
-                            const sid = String(o.seller?._id || o.seller || '');
-                            if (!sid) return acc;
-                            acc[sid] = (acc[sid] || 0) + 1;
-                            return acc;
-                        }, {});
+            // All sellers: fetch remaining orders per seller so sections are complete.
+            (async () => {
+                try {
+                    const currentCountsById = rows.reduce((acc, order) => {
+                        const sellerId = String(order.seller?._id || order.seller || '');
+                        if (!sellerId) return acc;
+                        acc[sellerId] = (acc[sellerId] || 0) + 1;
+                        return acc;
+                    }, {});
 
-                        // For each seller option present, fetch remaining orders if any
-                        for (const opt of sellerOptions || []) {
-                            const sellerId = String(opt.value || '');
-                            const totalForSeller = opt.count || 0;
-                            const have = currentCountsById[sellerId] || 0;
-                            if (totalForSeller > have) {
-                                // fetch all orders for this seller (limit pages of 200)
-                                const fetched = [];
-                                let page = 1;
-                                const pageSize = 200;
-                                while (true) {
-                                    const resp = await api.get('/affiliate-orders/daily', {
-                                        params: {
-                                            page,
-                                            limit: pageSize,
-                                            ...(dateFilter.mode === 'single'
-                                                ? { date: dateFilter.single }
-                                                : {
-                                                    ...(dateFilter.from ? { startDate: dateFilter.from } : {}),
-                                                    ...(dateFilter.to ? { endDate: dateFilter.to } : {}),
-                                                }),
-                                            excludeLowValue: excludeLowValue ? 'true' : 'false',
-                                            excludeCarryForwards: excludeCarryForwards ? 'true' : 'false',
-                                            includeDone: showDoneEntries ? 'true' : 'false',
-                                            sellerId: sellerId,
-                                            ...(marketplace ? { marketplace } : {}),
-                                        }
-                                    });
-                                    const data = resp.data || {};
-                                    const pageRows = Array.isArray(data) ? data : (data.orders || []);
-                                    if (!pageRows.length) break;
-                                    for (const r of pageRows) fetched.push(r);
-                                    const pag = data.pagination || null;
-                                    if (pag) {
-                                        if (page >= (pag.totalPages || 1)) break;
-                                    } else {
-                                        break;
-                                    }
-                                    page += 1;
-                                }
+                    for (const opt of sellerOptions || []) {
+                        if (generation !== ordersFetchGenerationRef.current) return;
 
-                                if (fetched.length) {
-                                    // Merge into orders state, avoiding duplicates
-                                    setOrders((prev) => {
-                                        const byId = new Map(prev.map((p) => [String(p._id), p]));
-                                        for (const fr of fetched) {
-                                            if (!byId.has(String(fr._id))) {
-                                                byId.set(String(fr._id), normalizeAffiliateOrder(fr));
-                                            }
-                                        }
-                                        return Array.from(byId.values()).sort((a, b) => new Date(a.dateSold || a.creationDate || 0) - new Date(b.dateSold || b.creationDate || 0));
-                                    });
+                        const sellerId = String(opt.value || '');
+                        const totalForSeller = opt.count || 0;
+                        const have = currentCountsById[sellerId] || 0;
+                        if (totalForSeller <= have) continue;
+
+                        const fetched = [];
+                        let page = 1;
+                        const pageSize = 200;
+                        while (true) {
+                            const resp = await api.get('/affiliate-orders/daily', {
+                                timeout: 90000,
+                                params: buildDailyOrdersParams(page, pageSize, sellerId),
+                            });
+                            if (generation !== ordersFetchGenerationRef.current) return;
+
+                            const data = resp.data || {};
+                            const pageRows = Array.isArray(data) ? data : (data.orders || []);
+                            if (!pageRows.length) break;
+                            fetched.push(...pageRows);
+
+                            const pag = data.pagination || null;
+                            if (!pag || page >= (pag.totalPages || 1)) break;
+                            page += 1;
+                        }
+
+                        if (!fetched.length || generation !== ordersFetchGenerationRef.current) continue;
+
+                        setOrders((prev) => {
+                            const byId = new Map(prev.map((entry) => [String(entry._id), entry]));
+                            for (const row of fetched) {
+                                if (!byId.has(String(row._id))) {
+                                    byId.set(String(row._id), normalizeAffiliateOrder(row));
                                 }
                             }
-                        }
-                    } catch (e) {
-                        // non-fatal
-                        console.error('Failed to fetch full seller orders:', e);
+                            return Array.from(byId.values()).sort(
+                                (left, right) => new Date(left.dateSold || left.creationDate || 0) - new Date(right.dateSold || right.creationDate || 0)
+                            );
+                        });
                     }
-                })();
-            }
+                } catch (error) {
+                    console.error('Failed to fetch full seller orders:', error);
+                }
+            })();
         } catch (err) {
-            setOrdersError(err?.response?.data?.error || err?.message || 'Failed to load orders');
+            if (generation === ordersFetchGenerationRef.current) {
+                setOrdersError(err?.response?.data?.error || err?.message || 'Failed to load orders');
+            }
         } finally {
-            setOrdersLoading(false);
+            if (generation === ordersFetchGenerationRef.current) {
+                setOrdersLoading(false);
+            }
         }
-    }, [currentPage, dateFilter, excludeLowValue, excludeCarryForwards, selectedSeller, showDoneEntries, marketplace, sellerOptions]);
+    }, [currentPage, buildDailyOrdersParams, selectedSeller, sellerOptions]);
 
     const fetchAmazonAccounts = useCallback(async () => {
         try {
@@ -1565,12 +1592,18 @@ export default function AffiliateOrdersPage() {
 
     const isColVisible = (id) => visibleColumns.includes(id);
     const visibleColumnCount = DAILY_ORDER_ALL_COLUMNS.filter((c) => visibleColumns.includes(c.id)).length;
+    const sellerScopedOrders = useMemo(() => {
+        if (!selectedSeller) return orders;
+        const sellerId = String(selectedSeller);
+        return orders.filter((order) => String(order.seller?._id || order.seller || '') === sellerId);
+    }, [orders, selectedSeller]);
+
     const displayedOrders = useMemo(
-        () => sortAffiliateOrders(orders, showNotYetFirst),
-        [orders, showNotYetFirst]
+        () => sortAffiliateOrders(sellerScopedOrders, showNotYetFirst),
+        [sellerScopedOrders, showNotYetFirst]
     );
     const isDailyOrdersLoading = ordersLoading;
-    const orderSections = buildOrderSections(orders, showNotYetFirst);
+    const orderSections = buildOrderSections(sellerScopedOrders, showNotYetFirst);
     
     // Paginate the displayed orders for the current page
     const paginatedOrderSections = useMemo(() => {
@@ -1854,12 +1887,13 @@ export default function AffiliateOrdersPage() {
                                                                     {sellerName}
                                                                 </Typography>
                                                                 {
-                                                                    // Prefer aggregated seller counts from sellerOptions when available (All Sellers view).
                                                                     (() => {
                                                                         const aggregated = sellerCountMap.get(sellerName);
-                                                                        const total = Number.isFinite(aggregated) ? aggregated : (sectionSellerGroupStats[sellerName]?.total || 0);
+                                                                        const scopedTotal = selectedSeller
+                                                                            ? displayedOrders.length
+                                                                            : (Number.isFinite(aggregated) ? aggregated : (sectionSellerGroupStats[sellerName]?.total || 0));
                                                                         return (
-                                                                            <Chip size="small" label={`${total} order${total !== 1 ? 's' : ''}`} variant="outlined" />
+                                                                            <Chip size="small" label={`${scopedTotal} order${scopedTotal !== 1 ? 's' : ''}`} variant="outlined" />
                                                                         );
                                                                     })()
                                                                 }
