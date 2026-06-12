@@ -175,13 +175,15 @@ function getSellerGroupName(order) {
 }
 
 function getOrderSku(order) {
-    const lineItem = Array.isArray(order?.lineItems) ? order.lineItems[0] : null;
-    return (
-        lineItem?.sku ||
-        lineItem?.SKU ||
-        order?.sku ||
-        ''
-    ).toString().trim();
+    if (!order) return '';
+    if (order.sku) return String(order.sku).trim();
+    if (Array.isArray(order.lineItems)) {
+        for (const lineItem of order.lineItems) {
+            const sku = lineItem?.sku || lineItem?.SKU || lineItem?.customLabel;
+            if (sku) return String(sku).trim();
+        }
+    }
+    return '';
 }
 
 function getDefaultSellerOption(sellerOptions) {

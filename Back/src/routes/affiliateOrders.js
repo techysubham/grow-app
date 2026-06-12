@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import Order from '../models/Order.js';
 import AmazonAccount from '../models/AmazonAccount.js';
 import AmazonAccountDailyBalance from '../models/AmazonAccountDailyBalance.js';
@@ -162,13 +163,26 @@ function getEffectiveCarryOverStart(rangeStart) {
 }
 
 function extractOrderSku(order) {
-    const lineItem = Array.isArray(order?.lineItems) ? order.lineItems[0] : null;
-    return (
-        lineItem?.sku ||
-        lineItem?.SKU ||
-        order?.sku ||
-        ''
-    ).toString().trim();
+    if (!order) return '';
+    if (order.sku) return String(order.sku).trim();
+    if (Array.isArray(order.lineItems)) {
+        for (const lineItem of order.lineItems) {
+            const sku = lineItem?.sku || lineItem?.SKU || lineItem?.customLabel;
+            if (sku) return String(sku).trim();
+        }
+    }
+    return '';
+}
+
+function normalizeSku(value) {
+    return String(value || '').trim().toUpperCase();
+}
+
+/** GRW25XXXXX or GRW25XXXXX-2 → GRW25XXXXX */
+function getBaseSku(value) {
+    const sku = normalizeSku(value);
+    const match = sku.match(/^(GRW25[A-Z0-9]{5})(?:-\d+)?$/);
+    return match ? match[1] : sku;
 }
 
 function extractOrderItemNumber(order) {
@@ -194,6 +208,178 @@ function resolveSupplierLinkFromListing(listingRow) {
     return buildAmazonLinkFromAsin(listingRow._asinReference);
 }
 
+function toSellerObjectIds(sellerIds = []) {
+    return [...new Set(sellerIds)]
+        .filter((id) => mongoose.isValidObjectId(id))
+        .map((id) => new mongoose.Types.ObjectId(id));
+}
+
+function upsertListingLinkIndexEntry(byKey, key, listing) {
+    if (!key || !listing) return;
+    const link = resolveSupplierLinkFromListing(listing);
+    if (!link) return;
+
+    const existing = byKey.get(key);
+    if (!existing) {
+        byKey.set(key, { link, listing });
+        return;
+    }
+
+    const existingActive = existing.listing?.status === 'active';
+    const nextActive = listing.status === 'active';
+    if (!existingActive && nextActive) {
+        byKey.set(key, { link, listing });
+        return;
+    }
+
+    if (existingActive === nextActive) {
+        const existingAt = new Date(existing.listing?.updatedAt || 0).getTime();
+        const nextAt = new Date(listing.updatedAt || 0).getTime();
+        if (nextAt > existingAt) {
+            byKey.set(key, { link, listing });
+        }
+    }
+}
+
+/**
+ * Index Listings Database rows by seller + SKU / eBay item / ASIN suffix,
+ * plus global SKU keys when the order seller differs from the listing seller.
+ */
+function buildTemplateListingLinkIndex(templateListings = []) {
+    const byKey = new Map();
+
+    const sorted = [...templateListings].sort((left, right) => {
+        const leftActive = left?.status === 'active' ? 0 : 1;
+        const rightActive = right?.status === 'active' ? 0 : 1;
+        if (leftActive !== rightActive) return leftActive - rightActive;
+        return new Date(right?.updatedAt || 0).getTime() - new Date(left?.updatedAt || 0).getTime();
+    });
+
+    for (const listing of sorted) {
+        const sellerId = String(listing.sellerId || '');
+        const customLabel = normalizeSku(listing.customLabel || '');
+        const asin = String(listing._asinReference || '').trim().toUpperCase();
+        const ebayItemId = String(listing.ebayItemId || '').trim();
+
+        if (customLabel) {
+            upsertListingLinkIndexEntry(byKey, `${sellerId}::sku::${customLabel}`, listing);
+            upsertListingLinkIndexEntry(byKey, `${sellerId}::sku::${getBaseSku(customLabel)}`, listing);
+            upsertListingLinkIndexEntry(byKey, `global::sku::${customLabel}`, listing);
+            upsertListingLinkIndexEntry(byKey, `global::sku::${getBaseSku(customLabel)}`, listing);
+        }
+        if (ebayItemId) {
+            upsertListingLinkIndexEntry(byKey, `${sellerId}::item::${ebayItemId}`, listing);
+        }
+        if (asin.length >= 5) {
+            const suffix = asin.slice(-5);
+            upsertListingLinkIndexEntry(byKey, `${sellerId}::asinSuffix::${suffix}`, listing);
+            upsertListingLinkIndexEntry(byKey, `global::asinSuffix::${suffix}`, listing);
+        }
+    }
+
+    return byKey;
+}
+
+function collectSkuVariantsForOrders(orders = [], listingSkuBySellerItem = new Map()) {
+    const variants = new Set();
+
+    for (const order of orders) {
+        const sellerId = String(order?.seller?._id || order?.seller || '').trim();
+        const itemNumber = String(extractOrderItemNumber(order) || '').trim();
+        const sku = normalizeSku(
+            extractOrderSku(order) || (sellerId ? listingSkuBySellerItem.get(`${sellerId}::${itemNumber}`) : '') || ''
+        );
+        if (!sku) continue;
+        variants.add(sku);
+        variants.add(getBaseSku(sku));
+    }
+
+    return [...variants];
+}
+
+async function fetchTemplateListingsForSupplierLookup(sellerObjectIds = [], skuVariants = []) {
+    const clauses = [];
+
+    if (sellerObjectIds.length) {
+        clauses.push({
+            sellerId: { $in: sellerObjectIds },
+            deletedAt: null,
+        });
+    }
+
+    if (skuVariants.length) {
+        clauses.push({
+            deletedAt: null,
+            customLabel: { $in: skuVariants },
+        });
+
+        const asinSuffixes = [...new Set(
+            skuVariants
+                .map((sku) => getBaseSku(sku))
+                .filter((sku) => sku.startsWith('GRW25') && sku.length === 10)
+                .map((sku) => sku.slice(5))
+        )];
+
+        if (asinSuffixes.length) {
+            clauses.push({
+                deletedAt: null,
+                $or: asinSuffixes.map((suffix) => ({
+                    _asinReference: new RegExp(`${suffix}$`, 'i'),
+                })),
+            });
+        }
+    }
+
+    if (!clauses.length) return [];
+
+    const rows = await TemplateListing.find({ $or: clauses })
+        .select('+_asinReference sellerId customLabel amazonLink ebayItemId status updatedAt')
+        .lean();
+
+    const byId = new Map();
+    for (const row of rows) {
+        byId.set(String(row._id), row);
+    }
+    return [...byId.values()];
+}
+
+function lookupSupplierLinkForOrder(order, linkIndex, listingSkuBySellerItem) {
+    const sellerId = String(order?.seller?._id || order?.seller || '').trim();
+    const itemNumber = String(extractOrderItemNumber(order) || '').trim();
+    const sku = normalizeSku(
+        extractOrderSku(order) || (sellerId ? listingSkuBySellerItem.get(`${sellerId}::${itemNumber}`) : '') || ''
+    );
+
+    const sellerAttempts = [];
+    const globalAttempts = [];
+
+    if (sku) {
+        const baseSku = getBaseSku(sku);
+        globalAttempts.push(`global::sku::${sku}`);
+        globalAttempts.push(`global::sku::${baseSku}`);
+        if (baseSku.startsWith('GRW25') && baseSku.length === 10) {
+            globalAttempts.push(`global::asinSuffix::${baseSku.slice(5)}`);
+        }
+        if (sellerId) {
+            sellerAttempts.push(`${sellerId}::sku::${sku}`);
+            sellerAttempts.push(`${sellerId}::sku::${baseSku}`);
+            if (baseSku.startsWith('GRW25') && baseSku.length === 10) {
+                sellerAttempts.push(`${sellerId}::asinSuffix::${baseSku.slice(5)}`);
+            }
+        }
+    }
+    if (sellerId && itemNumber) {
+        sellerAttempts.push(`${sellerId}::item::${itemNumber}`);
+    }
+
+    for (const key of [...sellerAttempts, ...globalAttempts]) {
+        const match = linkIndex.get(key);
+        if (match?.link) return match.link;
+    }
+
+    return '';
+}
+
 async function applySupplierLinksFromSavedAsins(orders = []) {
     if (!Array.isArray(orders) || orders.length === 0) return orders;
 
@@ -211,24 +397,24 @@ async function applySupplierLinksFromSavedAsins(orders = []) {
 async function enrichSupplierLinksForOrders(orders = []) {
     if (!orders.length) return orders;
 
-    const rawLookupRows = orders
-        .map((order) => ({
-            sellerId: String(order?.seller?._id || order?.seller || '').trim(),
-            sku: extractOrderSku(order),
-            itemNumber: extractOrderItemNumber(order),
-        }))
-        .filter((row) => row.sellerId);
+    const sellerIds = [
+        ...new Set(
+            orders
+                .map((order) => String(order?.seller?._id || order?.seller || '').trim())
+                .filter(Boolean)
+        ),
+    ];
+    const missingSkuItemNumbers = [
+        ...new Set(
+            orders
+                .filter((order) => !extractOrderSku(order) && extractOrderItemNumber(order))
+                .map((order) => extractOrderItemNumber(order))
+        ),
+    ];
 
-    if (!rawLookupRows.length) return orders;
-
-    const sellerIds = [...new Set(rawLookupRows.map((row) => row.sellerId))];
-    const missingSkuItemNumbers = [...new Set(
-        rawLookupRows.filter((row) => !row.sku && row.itemNumber).map((row) => row.itemNumber)
-    )];
-
-    const listingDocs = missingSkuItemNumbers.length > 0
+    const listingDocs = missingSkuItemNumbers.length > 0 && sellerIds.length > 0
         ? await Listing.find({
-            seller: { $in: sellerIds },
+            seller: { $in: toSellerObjectIds(sellerIds) },
             itemId: { $in: missingSkuItemNumbers },
           }).select('seller itemId sku').lean()
         : [];
@@ -237,41 +423,22 @@ async function enrichSupplierLinksForOrders(orders = []) {
         listingDocs.map((row) => [`${String(row.seller)}::${String(row.itemId || '').trim()}`, String(row.sku || '').trim()])
     );
 
-    const orderLookupKeys = rawLookupRows.map((row) => {
-        if (row.sku) return row;
-        const fallbackSku = listingSkuBySellerItem.get(`${row.sellerId}::${row.itemNumber}`) || '';
-        return { ...row, sku: fallbackSku };
-    }).filter((row) => row.sellerId && row.sku);
+    const skuVariants = collectSkuVariantsForOrders(orders, listingSkuBySellerItem);
+    if (!skuVariants.length && !sellerIds.length) return orders;
 
-    if (!orderLookupKeys.length) return orders;
-
-    const skus = [...new Set(orderLookupKeys.map((row) => row.sku))];
-
-    const templateListings = await TemplateListing.find({
-        sellerId: { $in: sellerIds },
-        customLabel: { $in: skus },
-        deletedAt: null,
-    })
-        .select('+_asinReference sellerId customLabel amazonLink')
-        .lean();
-
-    const supplierLinkBySellerSku = new Map(
-        templateListings.map((row) => [
-            `${String(row.sellerId)}::${String(row.customLabel || '').trim()}`,
-            resolveSupplierLinkFromListing(row),
-        ])
+    const templateListings = await fetchTemplateListingsForSupplierLookup(
+        toSellerObjectIds(sellerIds),
+        skuVariants
     );
+    if (!templateListings.length) return orders;
+
+    const linkIndex = buildTemplateListingLinkIndex(templateListings);
 
     return orders.map((order) => {
         const existingLink = String(order?.affiliateLink || '').trim();
         if (existingLink) return order;
 
-        const sellerId = String(order?.seller?._id || order?.seller || '').trim();
-        const itemNumber = extractOrderItemNumber(order);
-        const sku = extractOrderSku(order) || listingSkuBySellerItem.get(`${sellerId}::${itemNumber}`) || '';
-        if (!sellerId || !sku) return order;
-
-        const supplierLink = supplierLinkBySellerSku.get(`${sellerId}::${sku}`) || '';
+        const supplierLink = lookupSupplierLinkForOrder(order, linkIndex, listingSkuBySellerItem);
         if (!supplierLink) return order;
 
         return {
@@ -329,12 +496,13 @@ router.post('/backfill-supplier-links', async (req, res) => {
         if (sellerId) filter.seller = sellerId;
 
         const orders = await Order.find(filter)
-            .select('seller lineItems itemNumber affiliateLink')
+            .select('seller lineItems itemNumber affiliateLink sku')
             .sort({ createdAt: -1 })
             .limit(Math.max(1, Math.min(Number(limit) || 2000, 10000)))
             .lean();
 
-        const enriched = await applySupplierLinksFromSavedAsins(orders);
+        const ordersWithSellers = await attachSellersToOrders(orders);
+        const enriched = await applySupplierLinksFromSavedAsins(ordersWithSellers);
         const updates = enriched
             .filter((row) => String(row.affiliateLink || '').trim())
             .map((row) => ({
@@ -691,11 +859,11 @@ router.get('/spend', async (req, res) => {
 
         const orders = await Order.find(query)
             .select(AFFILIATE_DAILY_SELECT)
-            .populate({ path: 'seller', select: 'user', populate: { path: 'user', select: 'username' } })
             .sort({ sourcingCompletedAt: 1, dateSold: 1 })
             .lean();
 
-        const ordersWithSupplierLink = await applySupplierLinksFromSavedAsins(orders);
+        const ordersWithSellers = await attachSellersToOrders(orders);
+        const ordersWithSupplierLink = await applySupplierLinksFromSavedAsins(ordersWithSellers);
 
         const enrichedOrders = ordersWithSupplierLink
             .map((order) => {
