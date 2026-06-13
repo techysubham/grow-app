@@ -3393,6 +3393,16 @@ router.get('/all-orders-usd', async (req, res) => {
       const net = (parseFloat(orderObj.orderEarnings) || 0) - tds - tid;
 
       orderObj.pBalance = parseFloat((net * orderObj.exchangeRate).toFixed(2));
+
+      const amazonTotalUsd = (parseFloat(orderObj.beforeTax) || 0) + (parseFloat(orderObj.estimatedTax) || 0);
+      if (amazonTotalUsd > 0) {
+        Object.assign(orderObj, await calculateOrderAmazonFinancials(orderObj));
+      }
+
+      if (orderObj.orderEarnings != null && orderObj.orderEarnings !== undefined) {
+        Object.assign(orderObj, await calculateOrderEbayFinancials(orderObj));
+      }
+
       orderObj.profit = parseFloat((((orderObj.pBalanceINR || 0) - (orderObj.amazonTotalINR || 0) - (orderObj.totalCC || 0)).toFixed(2)));
 
         return orderObj;

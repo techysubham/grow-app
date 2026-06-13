@@ -235,17 +235,17 @@ export async function calculateOrderEbayFinancials(order, overrideRate = null) {
   updates.tds = parseFloat((orderTotal * 0.01).toFixed(2));
   updates.net = parseFloat((earnings - updates.tds - updates.tid).toFixed(2));
 
+  const ebayMarketplace = getExchangeRateMarketplace('EBAY', order.purchaseMarketplaceId);
   const resolvedRate = overrideRate !== null && overrideRate !== undefined
-    ? { rate: parseFloat(overrideRate) }
-    : await getExchangeRateRecordForDate(getOrderRateDate(order), getExchangeRateMarketplace('EBAY', order.purchaseMarketplaceId));
+    ? parseFloat(overrideRate)
+    : (await getExchangeRateRecordForDate(getOrderRateDate(order), ebayMarketplace))?.rate;
 
-  if (resolvedRate && resolvedRate.rate) {
-    updates.ebayExchangeRate = resolvedRate.rate;
-    updates.pBalanceINR = parseFloat((updates.net * resolvedRate.rate).toFixed(2));
-  } else {
-    updates.ebayExchangeRate = null;
-    updates.pBalanceINR = null;
-  }
+  const ebayExchangeRate = Number.isFinite(resolvedRate)
+    ? resolvedRate
+    : getExchangeRateDefaultValue(ebayMarketplace);
+
+  updates.ebayExchangeRate = ebayExchangeRate;
+  updates.pBalanceINR = parseFloat((updates.net * ebayExchangeRate).toFixed(2));
 
   const pBalanceINR = updates.pBalanceINR !== undefined ? updates.pBalanceINR : (order.pBalanceINR || 0);
   const amazonTotalINR = order.amazonTotalINR || 0;
@@ -264,23 +264,20 @@ export async function calculateOrderAmazonFinancials(order, overrideRate = null)
 
   const orderDate = new Date(getOrderRateDate(order));
 
+  const amazonMarketplace = getExchangeRateMarketplace('AMAZON', order.purchaseMarketplaceId);
   const resolvedRate = overrideRate !== null && overrideRate !== undefined
-    ? { rate: parseFloat(overrideRate) }
-    : await getExchangeRateRecordForDate(orderDate, getExchangeRateMarketplace('AMAZON', order.purchaseMarketplaceId));
+    ? parseFloat(overrideRate)
+    : (await getExchangeRateRecordForDate(orderDate, amazonMarketplace))?.rate;
 
-  if (resolvedRate && resolvedRate.rate) {
-    updates.amazonExchangeRate = resolvedRate.rate;
-    updates.amazonTotalINR = parseFloat((updates.amazonTotal * resolvedRate.rate).toFixed(2));
-    updates.marketplaceFee = parseFloat((updates.amazonTotalINR * 0.04).toFixed(2));
-    updates.igst = parseFloat((updates.marketplaceFee * 0.18).toFixed(2));
-    updates.totalCC = parseFloat((updates.marketplaceFee + updates.igst).toFixed(2));
-  } else {
-    updates.amazonExchangeRate = null;
-    updates.amazonTotalINR = null;
-    updates.marketplaceFee = null;
-    updates.igst = null;
-    updates.totalCC = null;
-  }
+  const amazonExchangeRate = Number.isFinite(resolvedRate)
+    ? resolvedRate
+    : getExchangeRateDefaultValue(amazonMarketplace);
+
+  updates.amazonExchangeRate = amazonExchangeRate;
+  updates.amazonTotalINR = parseFloat((updates.amazonTotal * amazonExchangeRate).toFixed(2));
+  updates.marketplaceFee = parseFloat((updates.amazonTotalINR * 0.04).toFixed(2));
+  updates.igst = parseFloat((updates.marketplaceFee * 0.18).toFixed(2));
+  updates.totalCC = parseFloat((updates.marketplaceFee + updates.igst).toFixed(2));
 
   const pBalanceINR = order.pBalanceINR || 0;
   const amazonTotalINR = updates.amazonTotalINR !== undefined ? updates.amazonTotalINR : (order.amazonTotalINR || 0);
