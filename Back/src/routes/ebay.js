@@ -3287,25 +3287,50 @@ router.get('/all-orders-usd', async (req, res) => {
     const pageNum = parseInt(page, 10);
     const limitNum = parseInt(limit, 10);
     const skip = (pageNum - 1) * limitNum;
+    const includeCounts = req.query.includeCounts !== 'false';
 
-    const totalOrders = await Order.countDocuments(query);
+    const [totalOrders, orders, categoryData, rangeData, productData] = await Promise.all([
+      Order.countDocuments(query),
+      Order.find(query)
+        .populate({
+          path: 'seller',
+          populate: {
+            path: 'user',
+            select: 'username email'
+          }
+        })
+        .sort({ creationDate: -1 })
+        .skip(skip)
+        .limit(limitNum),
+      includeCounts
+        ? Order.aggregate([
+          { $match: query },
+          { $group: { _id: '$orderCategoryId', count: { $sum: 1 } } },
+          { $match: { _id: { $ne: null } } }
+        ])
+        : Promise.resolve([]),
+      includeCounts
+        ? Order.aggregate([
+          { $match: query },
+          { $group: { _id: '$orderRangeId', count: { $sum: 1 } } },
+          { $match: { _id: { $ne: null } } }
+        ])
+        : Promise.resolve([]),
+      includeCounts
+        ? Order.aggregate([
+          { $match: query },
+          { $group: { _id: '$orderProductId', count: { $sum: 1 } } },
+          { $match: { _id: { $ne: null } } }
+        ])
+        : Promise.resolve([]),
+    ]);
+
     const totalPages = Math.ceil(totalOrders / limitNum);
 
-    const orders = await Order.find(query)
-      .populate({
-        path: 'seller',
-        populate: {
-          path: 'user',
-          select: 'username email'
-        }
-      })
-      .sort({ creationDate: -1 })
-      .skip(skip)
-      .limit(limitNum);
-
     // Fallback: Calculate USD values on-the-fly if missing, and add exchange rate + P.Balance
-    const ordersWithUSD = await Promise.all(orders.map(async order => {
-      const orderObj = order.toObject();
+    const ordersWithUSD = await Promise.all(orders.map(async (order) => {
+      try {
+        const orderObj = order.toObject();
 
       // If USD values don't exist, calculate them
       if (orderObj.subtotalUSD === undefined || orderObj.subtotalUSD === null) {
@@ -3370,48 +3395,40 @@ router.get('/all-orders-usd', async (req, res) => {
       orderObj.pBalance = parseFloat((net * orderObj.exchangeRate).toFixed(2));
       orderObj.profit = parseFloat((((orderObj.pBalanceINR || 0) - (orderObj.amazonTotalINR || 0) - (orderObj.totalCC || 0)).toFixed(2)));
 
-      return orderObj;
+        return orderObj;
+      } catch (orderErr) {
+        console.error(`[All Orders USD] Order ${order.orderId} enrichment failed:`, orderErr);
+        return order.toObject();
+      }
     }));
 
-    // Calculate counts for categories, ranges, and products based on current filters
-    // Use the same query object for aggregation since seller is already ObjectId
-    const categoryData = await Order.aggregate([
-      { $match: query },
-      { $group: { _id: '$orderCategoryId', count: { $sum: 1 } } },
-      { $match: { _id: { $ne: null } } }
-    ]);
-    const categoryIds = categoryData.map(c => c._id);
-    const categories = await AsinListCategory.find({ _id: { $in: categoryIds } }).select('name');
-    const categoriesWithCounts = categoryData.map(cd => {
-      const category = categories.find(c => c._id.toString() === cd._id.toString());
-      return { name: category?.name || 'Unknown', count: cd.count };
-    });
+    let categoriesWithCounts = [];
+    let rangesWithCounts = [];
+    let productsWithCounts = [];
 
-    // Get unique range IDs and populate with names
-    const rangeData = await Order.aggregate([
-      { $match: query },
-      { $group: { _id: '$orderRangeId', count: { $sum: 1 } } },
-      { $match: { _id: { $ne: null } } }
-    ]);
-    const rangeIds = rangeData.map(r => r._id);
-    const ranges = await AsinListRange.find({ _id: { $in: rangeIds } }).select('name');
-    const rangesWithCounts = rangeData.map(rd => {
-      const range = ranges.find(r => r._id.toString() === rd._id.toString());
-      return { name: range?.name || 'Unknown', count: rd.count };
-    });
+    if (includeCounts) {
+      // Calculate counts for categories, ranges, and products based on current filters
+      const categoryIds = categoryData.map(c => c._id);
+      const categories = await AsinListCategory.find({ _id: { $in: categoryIds } }).select('name');
+      categoriesWithCounts = categoryData.map(cd => {
+        const category = categories.find(c => c._id.toString() === cd._id.toString());
+        return { name: category?.name || 'Unknown', count: cd.count };
+      });
 
-    // Get unique product IDs and populate with names
-    const productData = await Order.aggregate([
-      { $match: query },
-      { $group: { _id: '$orderProductId', count: { $sum: 1 } } },
-      { $match: { _id: { $ne: null } } }
-    ]);
-    const productIds = productData.map(p => p._id);
-    const products = await AsinListProduct.find({ _id: { $in: productIds } }).select('name');
-    const productsWithCounts = productData.map(pd => {
-      const product = products.find(p => p._id.toString() === pd._id.toString());
-      return { name: product?.name || 'Unknown', count: pd.count };
-    });
+      const rangeIds = rangeData.map(r => r._id);
+      const ranges = await AsinListRange.find({ _id: { $in: rangeIds } }).select('name');
+      rangesWithCounts = rangeData.map(rd => {
+        const range = ranges.find(r => r._id.toString() === rd._id.toString());
+        return { name: range?.name || 'Unknown', count: rd.count };
+      });
+
+      const productIds = productData.map(p => p._id);
+      const products = await AsinListProduct.find({ _id: { $in: productIds } }).select('name');
+      productsWithCounts = productData.map(pd => {
+        const product = products.find(p => p._id.toString() === pd._id.toString());
+        return { name: product?.name || 'Unknown', count: pd.count };
+      });
+    }
 
     console.log(`[All Orders USD] Query: ${JSON.stringify(query)}, Page: ${pageNum}/${totalPages}, Found ${orders.length}/${totalOrders} orders`);
 
@@ -3426,9 +3443,9 @@ router.get('/all-orders-usd', async (req, res) => {
         hasPrevPage: pageNum > 1
       },
       counts: {
-        uniqueCategories: categories.length,
-        uniqueRanges: ranges.length,
-        uniqueProducts: products.length,
+        uniqueCategories: categoriesWithCounts.length,
+        uniqueRanges: rangesWithCounts.length,
+        uniqueProducts: productsWithCounts.length,
         categoryData: categoriesWithCounts,
         rangeData: rangesWithCounts,
         productData: productsWithCounts

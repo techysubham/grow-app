@@ -542,7 +542,8 @@ export default function AllOrdersSheetPage() {
       const params = {
         page: isSingleDate ? 1 : currentPage,
         limit: isSingleDate ? 10000 : ordersPerPage, // High limit for single date to get all
-        excludeCancelled: true // Exclude cancelled orders
+        excludeCancelled: true, // Exclude cancelled orders
+        includeCounts: false, // Count aggregations are slow on large datasets; load table first
       };
       
       if (selectedSeller) params.sellerId = selectedSeller;
@@ -578,7 +579,7 @@ export default function AllOrdersSheetPage() {
         if (subtotalFilter.to !== '') params.maxSubtotal = subtotalFilter.to;
       }
 
-      const { data } = await api.get('/ebay/all-orders-usd', { params });
+      const { data } = await api.get('/ebay/all-orders-usd', { params, timeout: 120000 });
       setOrders(data?.orders || []);
       
       if (data?.pagination) {
@@ -592,7 +593,9 @@ export default function AllOrdersSheetPage() {
     } catch (e) {
       setOrders([]);
       setCounts({ uniqueCategories: 0, uniqueRanges: 0, uniqueProducts: 0, categoryData: [], rangeData: [], productData: [] });
-      setError(e?.response?.data?.error || 'Failed to load orders');
+      const status = e.response?.status;
+      const detail = e.response?.data?.error || e.message || 'Failed to load orders';
+      setError(status ? `Failed to load orders (${status}): ${detail}` : detail);
     } finally {
       setLoading(false);
     }
