@@ -463,9 +463,12 @@ export default function SellerAnalyticsPage() {
                 <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#fff3e0', position: 'sticky', top: 0, zIndex: 100 }}>Subtotal</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#fff3e0', position: 'sticky', top: 0, zIndex: 100 }}>Shipping</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#fff3e0', position: 'sticky', top: 0, zIndex: 100 }}>Sales Tax</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#fff3e0', position: 'sticky', top: 0, zIndex: 100 }}>Discount</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#fff3e0', position: 'sticky', top: 0, zIndex: 100 }}>Transaction Fees</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#fff3e0', position: 'sticky', top: 0, zIndex: 100 }}>Ad Fees</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#fff9c4', position: 'sticky', top: 0, zIndex: 100 }}>Earnings</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#fff3e0', position: 'sticky', top: 0, zIndex: 100 }}>TDS</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#fff3e0', position: 'sticky', top: 0, zIndex: 100 }}>T.ID</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#e1f5fe', position: 'sticky', top: 0, zIndex: 100 }}>P.Balance (INR)</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#e8f5e9', position: 'sticky', top: 0, zIndex: 100 }}>A_total-inr</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: '#fce4ec', position: 'sticky', top: 0, zIndex: 100 }}>Credit Card Fees</TableCell>
@@ -492,6 +495,7 @@ export default function SellerAnalyticsPage() {
                   <TableCell align="right">{formatCurrency(row.totalSubtotal)}</TableCell>
                   <TableCell align="right">{formatCurrency(row.totalShipping)}</TableCell>
                   <TableCell align="right">{formatCurrency(row.totalSalesTax)}</TableCell>
+                  <TableCell align="right">{formatCurrency(row.totalDiscount)}</TableCell>
                   <TableCell align="right">{formatCurrency(row.totalTransactionFees)}</TableCell>
                   <TableCell align="right">{formatCurrency(row.totalAdFees)}</TableCell>
                   <TableCell align="right">
@@ -499,6 +503,8 @@ export default function SellerAnalyticsPage() {
                       {formatCurrency(row.totalEarnings)}
                     </Typography>
                   </TableCell>
+                  <TableCell align="right">{formatCurrency(row.totalTds)}</TableCell>
+                  <TableCell align="right">{formatCurrency(row.totalTid)}</TableCell>
                   <TableCell align="right">
                     <Typography variant="body2" fontWeight="bold" color="info.main">
                       {formatINR(row.totalPBalanceINR)}
@@ -525,16 +531,20 @@ export default function SellerAnalyticsPage() {
                   totalSubtotal: acc.totalSubtotal + (row.totalSubtotal || 0),
                   totalShipping: acc.totalShipping + (row.totalShipping || 0),
                   totalSalesTax: acc.totalSalesTax + (row.totalSalesTax || 0),
+                  totalDiscount: acc.totalDiscount + (row.totalDiscount || 0),
                   totalTransactionFees: acc.totalTransactionFees + (row.totalTransactionFees || 0),
                   totalAdFees: acc.totalAdFees + (row.totalAdFees || 0),
                   totalEarnings: acc.totalEarnings + (row.totalEarnings || 0),
+                  totalTds: acc.totalTds + (row.totalTds || 0),
+                  totalTid: acc.totalTid + (row.totalTid || 0),
                   totalPBalanceINR: acc.totalPBalanceINR + (row.totalPBalanceINR || 0),
                   totalAmazonCosts: acc.totalAmazonCosts + (row.totalAmazonCosts || 0),
                   totalCreditCardFees: acc.totalCreditCardFees + (row.totalCreditCardFees || 0),
                   totalProfit: acc.totalProfit + (row.totalProfit || 0),
                 }), {
                   totalOrders: 0, totalSubtotal: 0, totalShipping: 0, totalSalesTax: 0,
-                  totalTransactionFees: 0, totalAdFees: 0, totalEarnings: 0,
+                  totalDiscount: 0, totalTransactionFees: 0, totalAdFees: 0, totalEarnings: 0,
+                  totalTds: 0, totalTid: 0,
                   totalPBalanceINR: 0, totalAmazonCosts: 0, totalCreditCardFees: 0, totalProfit: 0,
                 });
                 const cellSx = { fontWeight: 'bold', bgcolor: '#f5f5f5', borderTop: '2px solid #bdbdbd' };
@@ -545,9 +555,12 @@ export default function SellerAnalyticsPage() {
                     <TableCell align="right" sx={cellSx}>{formatCurrency(parseFloat(totals.totalSubtotal.toFixed(2)))}</TableCell>
                     <TableCell align="right" sx={cellSx}>{formatCurrency(parseFloat(totals.totalShipping.toFixed(2)))}</TableCell>
                     <TableCell align="right" sx={cellSx}>{formatCurrency(parseFloat(totals.totalSalesTax.toFixed(2)))}</TableCell>
+                    <TableCell align="right" sx={cellSx}>{formatCurrency(parseFloat(totals.totalDiscount.toFixed(2)))}</TableCell>
                     <TableCell align="right" sx={cellSx}>{formatCurrency(parseFloat(totals.totalTransactionFees.toFixed(2)))}</TableCell>
                     <TableCell align="right" sx={cellSx}>{formatCurrency(parseFloat(totals.totalAdFees.toFixed(2)))}</TableCell>
                     <TableCell align="right" sx={{ ...cellSx, color: 'success.main' }}>{formatCurrency(parseFloat(totals.totalEarnings.toFixed(2)))}</TableCell>
+                    <TableCell align="right" sx={cellSx}>{formatCurrency(parseFloat(totals.totalTds.toFixed(2)))}</TableCell>
+                    <TableCell align="right" sx={cellSx}>{formatCurrency(parseFloat(totals.totalTid.toFixed(2)))}</TableCell>
                     <TableCell align="right" sx={{ ...cellSx, color: 'info.main' }}>{formatINR(parseFloat(totals.totalPBalanceINR.toFixed(2)))}</TableCell>
                     <TableCell align="right" sx={cellSx}>{formatINR(parseFloat(totals.totalAmazonCosts.toFixed(2)))}</TableCell>
                     <TableCell align="right" sx={cellSx}>{formatINR(parseFloat(totals.totalCreditCardFees.toFixed(2)))}</TableCell>

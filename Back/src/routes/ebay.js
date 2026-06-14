@@ -30,6 +30,12 @@ import ConversationMeta from '../models/ConversationMeta.js';
 import ChatAgent from '../models/ChatAgent.js';
 import { getOrderQtyExcludedLegacyIdSet } from '../utils/orderQtyExcludeLegacyCache.js';
 import { enrichOrdersWithSupplierLinks } from '../utils/supplierLinkFromListings.js';
+import { buildSellerAnalyticsFromOrders } from '../utils/sellerAnalyticsFinancials.js';
+import {
+  applyUsdFieldsSync,
+  enrichOrderLikeAllOrdersSheet,
+  prefetchExchangeRatesForOrders,
+} from '../utils/allOrdersSheetEnrichment.js';
 import {
   applyManualFieldUpdatesToOrder,
   importFulfillmentRows,
@@ -3326,91 +3332,19 @@ router.get('/all-orders-usd', async (req, res) => {
     ]);
 
     const totalPages = Math.ceil(totalOrders / limitNum);
+    const rateCache = await prefetchExchangeRatesForOrders(orders);
 
-    // Fallback: Calculate USD values on-the-fly if missing, and add exchange rate + P.Balance
-    const ordersWithUSD = await Promise.all(orders.map(async (order) => {
+    const ordersWithUSD = orders.map((order) => {
       try {
         const orderObj = order.toObject();
-
-      // If USD values don't exist, calculate them
-      if (orderObj.subtotalUSD === undefined || orderObj.subtotalUSD === null) {
-        const marketplace = orderObj.purchaseMarketplaceId;
-
-        if (marketplace === 'EBAY_US') {
-          // US orders - already in USD
-          orderObj.subtotalUSD = orderObj.subtotal || 0;
-          orderObj.shippingUSD = orderObj.shipping || 0;
-          orderObj.salesTaxUSD = orderObj.salesTax || 0;
-          orderObj.discountUSD = orderObj.discount || 0;
-          orderObj.transactionFeesUSD = orderObj.transactionFees || 0;
-          orderObj.conversionRate = 1;
-        } else {
-          // Non-US orders - calculate from paymentSummary
-          let conversionRate = 0;
-
-          if (orderObj.paymentSummary?.totalDueSeller?.convertedFromValue &&
-            orderObj.paymentSummary?.totalDueSeller?.value) {
-            const originalValue = parseFloat(orderObj.paymentSummary.totalDueSeller.convertedFromValue);
-            const usdValue = parseFloat(orderObj.paymentSummary.totalDueSeller.value);
-            if (originalValue > 0) {
-              conversionRate = usdValue / originalValue;
-            }
-          }
-
-          // Apply conversion with proper rounding (2 decimal places)
-          orderObj.subtotalUSD = conversionRate ? parseFloat(((orderObj.subtotal || 0) * conversionRate).toFixed(2)) : 0;
-          orderObj.shippingUSD = conversionRate ? parseFloat(((orderObj.shipping || 0) * conversionRate).toFixed(2)) : 0;
-          orderObj.salesTaxUSD = conversionRate ? parseFloat(((orderObj.salesTax || 0) * conversionRate).toFixed(2)) : 0;
-          orderObj.discountUSD = conversionRate ? parseFloat(((orderObj.discount || 0) * conversionRate).toFixed(2)) : 0;
-          orderObj.transactionFeesUSD = conversionRate ? parseFloat(((orderObj.transactionFees || 0) * conversionRate).toFixed(2)) : 0;
-          orderObj.conversionRate = parseFloat(conversionRate.toFixed(5));
-        }
-      }
-
-      // ALWAYS recalculate refunds from paymentSummary.refunds (in case refunds were added after initial sync)
-      let refundTotal = 0;
-      if (orderObj.paymentSummary?.refunds && Array.isArray(orderObj.paymentSummary.refunds)) {
-        refundTotal = orderObj.paymentSummary.refunds.reduce((sum, refund) => {
-          return sum + parseFloat(refund.amount?.value || 0);
-        }, 0);
-      }
-      const conversionRate = orderObj.conversionRate || 1;
-      orderObj.refundTotalUSD = parseFloat((refundTotal * conversionRate).toFixed(2));
-
-      // Get exchange rates for order's date (USD to INR)
-      const ebayMarketplace = getExchangeRateMarketplace('EBAY', orderObj.purchaseMarketplaceId);
-      const amazonMarketplace = getExchangeRateMarketplace('AMAZON', orderObj.purchaseMarketplaceId);
-      const ebayExchangeRate = orderObj.ebayExchangeRate ?? await getExchangeRateForDate(orderObj.dateSold || orderObj.creationDate, ebayMarketplace);
-      const amazonExchangeRate = orderObj.amazonExchangeRate ?? await getExchangeRateForDate(orderObj.dateSold || orderObj.creationDate, amazonMarketplace);
-      orderObj.exchangeRate = ebayExchangeRate;
-      orderObj.ebayExchangeRate = ebayExchangeRate;
-      orderObj.amazonExchangeRate = amazonExchangeRate;
-
-      // Calculate NET and P.Balance using non-USD financial fields
-      const total = getOrderTotalAmount(orderObj);
-      const tds = total * 0.01; // 1% of (pricingSummary.total.value + salesTax)
-      const tid = 0.24;
-      const net = (parseFloat(orderObj.orderEarnings) || 0) - tds - tid;
-
-      orderObj.pBalance = parseFloat((net * orderObj.exchangeRate).toFixed(2));
-
-      const amazonTotalUsd = (parseFloat(orderObj.beforeTax) || 0) + (parseFloat(orderObj.estimatedTax) || 0);
-      if (amazonTotalUsd > 0) {
-        Object.assign(orderObj, await calculateOrderAmazonFinancials(orderObj));
-      }
-
-      if (orderObj.orderEarnings != null && orderObj.orderEarnings !== undefined) {
-        Object.assign(orderObj, await calculateOrderEbayFinancials(orderObj));
-      }
-
-      orderObj.profit = parseFloat((((orderObj.pBalanceINR || 0) - (orderObj.amazonTotalINR || 0) - (orderObj.totalCC || 0)).toFixed(2)));
-
+        applyUsdFieldsSync(orderObj);
+        enrichOrderLikeAllOrdersSheet(orderObj, rateCache);
         return orderObj;
       } catch (orderErr) {
         console.error(`[All Orders USD] Order ${order.orderId} enrichment failed:`, orderErr);
         return order.toObject();
       }
-    }));
+    });
 
     let categoriesWithCounts = [];
     let rangesWithCounts = [];
@@ -11271,66 +11205,22 @@ router.get('/seller-analytics', requireAuth, requirePageAccess('SellerAnalytics'
       amazonAccount: { $exists: true, $ne: null, $ne: '' }
     });
 
-    // Determine grouping format with PST timezone
-    let dateGroupFormat;
-    if (groupBy === 'day') {
-      dateGroupFormat = { $dateToString: { format: '%Y-%m-%d', date: '$dateSold', timezone: 'America/Los_Angeles' } };
-    } else if (groupBy === 'week') {
-      dateGroupFormat = { $dateToString: { format: '%Y-W%V', date: '$dateSold', timezone: 'America/Los_Angeles' } };
-    } else if (groupBy === 'month') {
-      dateGroupFormat = { $dateToString: { format: '%Y-%m', date: '$dateSold', timezone: 'America/Los_Angeles' } };
-    } else {
+    // Determine grouping format with PST timezone (period keys built in buildSellerAnalyticsFromOrders)
+    if (!['day', 'week', 'month'].includes(groupBy)) {
       return res.status(400).json({ error: 'Invalid groupBy parameter. Use day, week, or month.' });
     }
 
-    // Aggregation pipeline
-    const analytics = await Order.aggregate([
-      { $match: matchQuery },
-      {
-        $group: {
-          _id: dateGroupFormat,
-          totalOrders: { $sum: 1 },
-          totalSubtotal: { $sum: { $ifNull: ['$subtotal', 0] } },
-          totalShipping: { $sum: { $ifNull: ['$shipping', 0] } },
-          totalSalesTax: { $sum: { $ifNull: ['$salesTax', 0] } },
-          totalDiscount: { $sum: { $ifNull: ['$discount', 0] } },
-          totalTransactionFees: { $sum: { $ifNull: ['$transactionFees', 0] } },
-          totalAdFees: { $sum: { $ifNull: ['$adFeeGeneral', 0] } },
-          totalEarnings: { $sum: { $ifNull: ['$orderEarnings', 0] } },
-          totalPBalanceINR: { $sum: { $ifNull: ['$pBalanceINR', 0] } },
-          totalAmazonCosts: { $sum: { $ifNull: ['$amazonTotalINR', 0] } },
-          totalCreditCardFees: { $sum: { $ifNull: ['$totalCC', 0] } },
-          // Compute profit on-the-fly so stale stored values don't affect results
-          totalProfit: {
-            $sum: {
-              $subtract: [
-                { $subtract: [{ $ifNull: ['$pBalanceINR', 0] }, { $ifNull: ['$amazonTotalINR', 0] }] },
-                { $ifNull: ['$totalCC', 0] }
-              ]
-            }
-          }
-        }
-      },
-      {
-        $project: {
-          period: '$_id',
-          totalOrders: 1,
-          totalSubtotal: { $round: ['$totalSubtotal', 2] },
-          totalShipping: { $round: ['$totalShipping', 2] },
-          totalSalesTax: { $round: ['$totalSalesTax', 2] },
-          totalDiscount: { $round: ['$totalDiscount', 2] },
-          totalTransactionFees: { $round: ['$totalTransactionFees', 2] },
-          totalAdFees: { $round: ['$totalAdFees', 2] },
-          totalEarnings: { $round: ['$totalEarnings', 2] },
-          totalPBalanceINR: { $round: ['$totalPBalanceINR', 2] },
-          totalAmazonCosts: { $round: ['$totalAmazonCosts', 2] },
-          totalCreditCardFees: { $round: ['$totalCreditCardFees', 2] },
-          totalProfit: { $round: ['$totalProfit', 2] },
-          _id: 0
-        }
-      },
-      { $sort: { period: 1 } }
-    ]);
+    const orders = await Order.find(matchQuery)
+      .select([
+        'dateSold', 'creationDate', 'purchaseMarketplaceId',
+        'subtotal', 'shipping', 'salesTax', 'discount', 'transactionFees', 'adFeeGeneral',
+        'orderEarnings', 'orderTotal', 'pricingSummary',
+        'tds', 'tid', 'net', 'pBalanceINR', 'ebayExchangeRate',
+        'beforeTax', 'estimatedTax', 'amazonTotalINR', 'amazonExchangeRate', 'totalCC', 'profit',
+      ].join(' '))
+      .lean();
+
+    const analytics = await buildSellerAnalyticsFromOrders(orders, groupBy);
 
     // Calculate overall summary
     const summary = analytics.reduce((acc, row) => {
