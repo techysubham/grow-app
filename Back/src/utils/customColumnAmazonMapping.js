@@ -24,6 +24,9 @@ const CUSTOM_COLUMN_TO_AMAZON_FIELD = {
   brand: 'brand',
   'storage capacity': 'size',
   storagecapacity: 'size',
+  'country of origin': 'countryOfOrigin',
+  'country/region of manufacture': 'countryOfOrigin',
+  'country of manufacture': 'countryOfOrigin',
 };
 
 /** product_information paths when top-level scrape fields are empty */
@@ -66,6 +69,23 @@ const CUSTOM_COLUMN_PI_FALLBACKS = {
     'internal_memory_storage_capacity',
     'storage',
   ],
+  'country of origin': [
+    'country_of_origin',
+    'country_of_origin_name',
+    'country_of_manufacture',
+    'manufacturer_country',
+    'country_of_production',
+  ],
+  'country/region of manufacture': [
+    'country_of_origin',
+    'country_of_manufacture',
+    'manufacturer_country',
+  ],
+  'country of manufacture': [
+    'country_of_manufacture',
+    'country_of_origin',
+    'manufacturer_country',
+  ],
 };
 
 /** Augmented `amazon_pi_*` keys (from saved PI catalog + augmentAmazonDataWithPiColumns) */
@@ -99,10 +119,76 @@ const CUSTOM_COLUMN_PI_KEY_HINTS = {
     'amazon_pi_hard_disk_size',
     'amazon_pi_memory_storage_capacity',
   ],
+  'country of origin': [
+    'amazon_pi_country_of_origin',
+    'amazon_pi_country_of_manufacture',
+    'amazon_pi_manufacturer_country',
+  ],
+  'country/region of manufacture': [
+    'amazon_pi_country_of_origin',
+    'amazon_pi_country_of_manufacture',
+  ],
+  'country of manufacture': [
+    'amazon_pi_country_of_manufacture',
+    'amazon_pi_country_of_origin',
+  ],
 };
 
 export function customColumnHasDefault(column) {
   return String(column?.defaultValue ?? '').trim().length > 0;
+}
+
+/** Keep only custom fields that belong to the template's custom columns (drops orphan aspects like Country of Origin). */
+export function filterCustomFieldsToTemplateColumns(customFields = {}, customColumns = []) {
+  const columnByNorm = new Map();
+  for (const col of customColumns || []) {
+    const name = String(col?.name || '').trim();
+    if (!name) continue;
+    columnByNorm.set(normalizeCustomColumnKey(name), name);
+  }
+
+  const out = {};
+  for (const [key, value] of Object.entries(customFields || {})) {
+    const canonical = columnByNorm.get(normalizeCustomColumnKey(key));
+    if (!canonical) continue;
+    const existing = String(out[canonical] ?? '').trim();
+    if (existing && existing.toLowerCase() !== 'does not apply') continue;
+    out[canonical] = value;
+  }
+  return out;
+}
+
+const COUNTRY_OF_ORIGIN_COLUMN_KEYS = new Set([
+  'country of origin',
+  'country/region of manufacture',
+  'country of manufacture',
+]);
+
+export function isCountryOfOriginColumnName(name) {
+  return COUNTRY_OF_ORIGIN_COLUMN_KEYS.has(normalizeCustomColumnKey(name));
+}
+
+export function findCountryOfOriginColumn(customColumns = []) {
+  return (customColumns || []).find((col) => isCountryOfOriginColumnName(col?.name));
+}
+
+/**
+ * eBay auto-infers Country of Origin (often "China") when omitted. Seller/template value wins.
+ * - Template column with default → always use that default (e.g. Does Not Apply).
+ * - Template column without default → keep autofill / Amazon values from the pipeline.
+ * - No template column → send Does Not Apply so eBay does not infer China.
+ */
+export function applyEbayCountryOfOriginOverride(customFields = {}, customColumns = []) {
+  const originCol = findCountryOfOriginColumn(customColumns);
+
+  if (originCol?.name) {
+    if (customColumnHasDefault(originCol)) {
+      return { ...customFields, [originCol.name]: originCol.defaultValue };
+    }
+    return customFields;
+  }
+
+  return { ...customFields, 'C:Country of Origin': 'Does Not Apply' };
 }
 
 export function normalizeCustomColumnKey(ebayField) {
@@ -220,6 +306,20 @@ export function fillMissingCustomColumnsFromAmazon(customColumns, amazonData, cu
     if (value == null || value === '') continue;
     customFields[name] = trimCustomFieldValue(value, name);
   }
+}
+
+/** Core fields with template defaults should not run ASIN auto-fill (e.g. description HTML template). */
+export function filterAutofillConfigsForCoreFieldDefaults(fieldConfigs, coreFieldDefaults = {}) {
+  const defaultDescription = String(coreFieldDefaults?.description || '').trim();
+  if (!defaultDescription) {
+    return Array.isArray(fieldConfigs) ? fieldConfigs : [];
+  }
+
+  return (Array.isArray(fieldConfigs) ? fieldConfigs : []).filter((config) => {
+    const ebayField = String(config?.ebayField || '').trim().toLowerCase();
+    if (isCustomFieldConfig(config)) return true;
+    return ebayField !== 'description';
+  });
 }
 
 /** Columns with template defaults should not run ASIN auto-fill (matches Manage Templates UI). */

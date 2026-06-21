@@ -1,13 +1,30 @@
 import TemplateListing from '../models/TemplateListing.js';
 import SellerPricingConfig from '../models/SellerPricingConfig.js';
 import { fetchAmazonData, applyFieldConfigs } from '../utils/asinAutofill.js';
-import { enrichListingItemSpecifics } from '../utils/ebayItemSpecificsEnrichment.js';
+import {
+  ensureCustomColumnFieldConfigs,
+  filterAutofillConfigsForColumnDefaults,
+  filterAutofillConfigsForCoreFieldDefaults,
+  filterCustomFieldsToTemplateColumns,
+  applyEbayCountryOfOriginOverride,
+} from '../utils/customColumnAmazonMapping.js';
+import {
+  mergeTemplateCoreFields,
+  resolveEffectiveCoreFieldDefaults,
+} from '../utils/templateCoreFieldMerge.js';
+import { enrichListingItemSpecifics, applyCustomColumnDefaults } from '../utils/ebayItemSpecificsEnrichment.js';
 import { mergeItemPhotoUrls, joinItemPhotoUrls } from '../utils/itemPhotoUrls.js';
 import { applyStoreListerSettings, stripStoreControlledListingFields } from '../utils/ebayStoreListerDefaults.js';
 import { applyStoreBrandToListing, getStoreBrandMode, stripBrandFromCustomFields } from '../utils/ebayStoreBrand.js';
 import { generateSKUFromASIN } from '../utils/skuGenerator.js';
 import { getEffectiveTemplate } from '../utils/templateMerger.js';
 import { addFixedPriceItemListing } from './ebayTradingDirectList.js';
+import { buildAmazonSupplierLink } from '../utils/supplierLinkFromListings.js';
+import { attachAmazonScrapedPrice } from '../utils/amazonScrapedPrice.js';
+import {
+  applyDescriptionTemplatePlaceholders,
+  hasUnsubstitutedPlaceholders,
+} from '../utils/descriptionTemplatePlaceholders.js';
 
 const REQUIRED_FIELDS = ['customLabel', 'title', 'startPrice', 'categoryId', 'itemPhotoUrl'];
 const STORE_LISTER_REGION = 'US';
@@ -30,11 +47,86 @@ function resolveAutofillCustomColumns(template) {
     .map((col) => (typeof col?.toObject === 'function' ? col.toObject() : col));
 }
 
-function resolveAutofillFieldConfigs(template) {
+function resolveAutofillFieldConfigs(template, coreFieldDefaults = {}) {
   const raw = Array.isArray(template?.asinAutomation?.fieldConfigs)
     ? template.asinAutomation.fieldConfigs
     : [];
-  return raw.map((config) => (typeof config?.toObject === 'function' ? config.toObject() : config));
+  const customColumns = resolveAutofillCustomColumns(template);
+  const merged = ensureCustomColumnFieldConfigs(
+    raw.map((config) => (typeof config?.toObject === 'function' ? config.toObject() : config)),
+    customColumns
+  );
+  const columnFiltered = filterAutofillConfigsForColumnDefaults(merged, customColumns);
+  return filterAutofillConfigsForCoreFieldDefaults(columnFiltered, coreFieldDefaults);
+}
+
+function resolveDescriptionAiAutofillConfig(template) {
+  const raw = Array.isArray(template?.asinAutomation?.fieldConfigs)
+    ? template.asinAutomation.fieldConfigs
+    : [];
+  const customColumns = resolveAutofillCustomColumns(template);
+  const merged = ensureCustomColumnFieldConfigs(
+    raw.map((config) => (typeof config?.toObject === 'function' ? config.toObject() : config)),
+    customColumns
+  );
+  const columnFiltered = filterAutofillConfigsForColumnDefaults(merged, customColumns);
+  return columnFiltered.find((cfg) => {
+    const ebayField = String(cfg?.ebayField || '').trim().toLowerCase();
+    const source = String(cfg?.source || '').trim().toLowerCase();
+    return cfg?.enabled && ebayField === 'description' && source === 'ai';
+  }) || null;
+}
+
+function templateDescriptionNeedsAiAutofill(coreFieldDefaults = {}) {
+  const desc = String(coreFieldDefaults?.description || '').trim();
+  if (!desc || !hasUnsubstitutedPlaceholders(desc)) return false;
+  return /\{\{AI_FEATURE_BULLETS\}\}|\{\{AI_DESCRIPTION\}\}/i.test(desc);
+}
+
+async function resolveDescriptionAiText(amazonData, template, pricingConfig, customColumns, coreFieldDefaults) {
+  if (!amazonData || !templateDescriptionNeedsAiAutofill(coreFieldDefaults)) return '';
+
+  const descriptionAiConfig = resolveDescriptionAiAutofillConfig(template);
+  if (!descriptionAiConfig) return '';
+
+  try {
+    const { coreFields } = await applyFieldConfigs(
+      amazonData,
+      [descriptionAiConfig],
+      pricingConfig,
+      customColumns
+    );
+    return String(coreFields?.description || '').trim();
+  } catch (error) {
+    console.warn('[Direct List] Description AI autofill failed:', error.message);
+    return '';
+  }
+}
+
+function applyDescriptionPlaceholdersIfNeeded(listingPayload, amazonData, aiDescription = '') {
+  const templateHtml = String(listingPayload?.description || '').trim();
+  if (!templateHtml || !hasUnsubstitutedPlaceholders(templateHtml)) {
+    return listingPayload;
+  }
+
+  return {
+    ...listingPayload,
+    description: applyDescriptionTemplatePlaceholders(
+      templateHtml,
+      listingPayload,
+      amazonData,
+      aiDescription
+    ),
+  };
+}
+
+function finalizeListingCustomFields(customFields = {}, customColumns = [], brandApplied = null) {
+  let filtered = filterCustomFieldsToTemplateColumns(customFields, customColumns);
+  if (brandApplied?.fieldKey && brandApplied?.value) {
+    filtered = { ...filtered, [brandApplied.fieldKey]: brandApplied.value };
+  }
+  filtered = applyEbayCountryOfOriginOverride(filtered, customColumns);
+  return filtered;
 }
 
 function mergeReviewIntoCustomFields(customFields = {}, coreFields = {}, customColumns = []) {
@@ -47,34 +139,52 @@ function mergeReviewIntoCustomFields(customFields = {}, coreFields = {}, customC
   return { ...customFields, [reviewCol.name]: reviewText };
 }
 
-function mergeTemplateCoreFields(coreFieldDefaults = {}, autoCoreFields = {}, amazonData = {}) {
-  const merged = {
-    ...(coreFieldDefaults || {}),
-    ...(autoCoreFields || {}),
+function hasNonEmptyCustomFields(customFields) {
+  if (!customFields || typeof customFields !== 'object') return false;
+  const entries = customFields instanceof Map
+    ? [...customFields.entries()]
+    : Object.entries(customFields);
+  return entries.some(([, value]) => String(value ?? '').trim() !== '');
+}
+
+function mergeClientListingOverrides(prepared, client) {
+  if (!client || typeof client !== 'object') return prepared;
+
+  const overrides = {};
+  for (const key of ['customLabel', 'title', 'startPrice', 'quantity', 'categoryId', 'categoryName', 'itemPhotoUrl']) {
+    const value = client[key];
+    if (value != null && String(value).trim() !== '') {
+      overrides[key] = value;
+    }
+  }
+
+  const description = String(client.description || '').trim();
+  if (description) {
+    overrides.description = client.description;
+  }
+
+  let customFields = prepared.customFields || {};
+  if (hasNonEmptyCustomFields(client.customFields)) {
+    const clientFields = client.customFields instanceof Map
+      ? Object.fromEntries(client.customFields)
+      : { ...client.customFields };
+    customFields = { ...customFields, ...clientFields };
+  }
+
+  return {
+    ...prepared,
+    ...overrides,
+    customFields,
   };
+}
 
-  if (!String(merged.title || '').trim() && String(amazonData?.title || '').trim()) {
-    merged.title = String(amazonData.title).trim().slice(0, 80);
+export function toCustomFieldsMap(customFields) {
+  if (!customFields) return new Map();
+  if (customFields instanceof Map) return customFields;
+  if (typeof customFields === 'object') {
+    return new Map(Object.entries(customFields));
   }
-
-  if (!String(merged.itemPhotoUrl || '').trim() && Array.isArray(amazonData?.images) && amazonData.images.length) {
-    merged.itemPhotoUrl = joinItemPhotoUrls(amazonData.images);
-  }
-
-  if (merged.startPrice === undefined || merged.startPrice === null || merged.startPrice === '') {
-    const priceText = String(amazonData?.price || '').replace(/[$€£¥,\s]/g, '');
-    const parsed = Number.parseFloat(priceText);
-    merged.startPrice = Number.isFinite(parsed) ? parsed.toFixed(2) : '0.01';
-  }
-
-  if (!String(merged.description || '').trim()) {
-    const fromDefaults = String(coreFieldDefaults?.description || '').trim();
-    const fromAmazon = String(amazonData?.description || '').trim();
-    if (fromDefaults) merged.description = coreFieldDefaults.description;
-    else if (fromAmazon) merged.description = fromAmazon;
-  }
-
-  return merged;
+  return new Map();
 }
 
 export function formatListingSummary(listingPayload = {}, asin = null) {
@@ -128,9 +238,16 @@ export async function loadDirectListContext(templateId, sellerId) {
   let pricingConfig = template.pricingConfig;
   if (sellerConfig) pricingConfig = sellerConfig.pricingConfig;
 
+  const effectiveCoreFieldDefaults = await resolveEffectiveCoreFieldDefaults(
+    template,
+    sellerId,
+    STORE_LISTER_REGION
+  );
+
   return {
     template,
-    fieldConfigs: resolveAutofillFieldConfigs(template),
+    effectiveCoreFieldDefaults,
+    fieldConfigs: resolveAutofillFieldConfigs(template, effectiveCoreFieldDefaults),
     customColumns: resolveAutofillCustomColumns(template),
     pricingConfig,
   };
@@ -146,36 +263,62 @@ export async function prepareDirectListPayload({
   context = null,
 }) {
   const ctx = context || await loadDirectListContext(templateId, sellerId);
-  const { template, fieldConfigs, customColumns, pricingConfig } = ctx;
+  const {
+    template,
+    fieldConfigs,
+    customColumns,
+    pricingConfig,
+    effectiveCoreFieldDefaults,
+  } = ctx;
+  const coreFieldDefaults = effectiveCoreFieldDefaults || template.coreFieldDefaults || {};
 
   let listingPayload = listing;
   let amazonData = null;
   const normalizedAsin = String(asin || listing?._asinReference || '').trim().toUpperCase() || null;
+  const clientListing = listing && typeof listing === 'object' ? listing : null;
 
-  if (!listingPayload && normalizedAsin) {
+  let aiDescription = '';
+
+  if (normalizedAsin) {
     amazonData = await fetchAmazonData(normalizedAsin, region);
+    aiDescription = await resolveDescriptionAiText(
+      amazonData,
+      template,
+      pricingConfig,
+      customColumns,
+      coreFieldDefaults
+    );
     const { coreFields, customFields } = await applyFieldConfigs(
       amazonData,
       fieldConfigs,
       pricingConfig,
       customColumns
     );
-    const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
+    const mergedCoreFields = mergeTemplateCoreFields(coreFieldDefaults, coreFields, amazonData);
     if (amazonData?.images?.length) {
       mergedCoreFields.itemPhotoUrl = mergeItemPhotoUrls(mergedCoreFields.itemPhotoUrl, amazonData.images);
     }
     const customFieldsMerged = mergeReviewIntoCustomFields(customFields, mergedCoreFields, customColumns);
+    applyCustomColumnDefaults(customFieldsMerged, customColumns);
 
-    listingPayload = enrichListingItemSpecifics(
-      stripStoreControlledListingFields({
-        ...mergedCoreFields,
-        customLabel: generateSKUFromASIN(normalizedAsin),
-        customFields: customFieldsMerged,
-        _asinReference: normalizedAsin,
-      }),
+    const baseListing = {
+      ...mergedCoreFields,
+      customLabel: generateSKUFromASIN(normalizedAsin),
+      customFields: customFieldsMerged,
+      _asinReference: normalizedAsin,
+    };
+
+    const prepared = enrichListingItemSpecifics(
+      stripStoreControlledListingFields(
+        applyDescriptionPlaceholdersIfNeeded(baseListing, amazonData, aiDescription)
+      ),
       customColumns,
       amazonData
     );
+
+    listingPayload = clientListing
+      ? mergeClientListingOverrides(prepared, clientListing)
+      : prepared;
   }
 
   if (!listingPayload || typeof listingPayload !== 'object') {
@@ -213,7 +356,14 @@ export async function prepareDirectListPayload({
     amazonData,
     customColumns
   );
-  listingPayload = brandResult.listing;
+  listingPayload = {
+    ...brandResult.listing,
+    customFields: finalizeListingCustomFields(
+      brandResult.listing.customFields,
+      customColumns,
+      brandResult.brandApplied
+    ),
+  };
 
   console.log('[Direct List] Applied store lister settings:', {
     sellerId: String(sellerId),
@@ -224,12 +374,34 @@ export async function prepareDirectListPayload({
     brand: brandResult.brandApplied.value,
   });
 
+  if (hasUnsubstitutedPlaceholders(listingPayload.description)) {
+    if (!aiDescription && amazonData) {
+      aiDescription = await resolveDescriptionAiText(
+        amazonData,
+        template,
+        pricingConfig,
+        customColumns,
+        coreFieldDefaults
+      );
+    }
+    listingPayload = applyDescriptionPlaceholdersIfNeeded(listingPayload, amazonData, aiDescription);
+  }
+
   const missing = getDirectListMissingFields(listingPayload);
   if (missing.length > 0) {
     const error = new Error(`Missing required listing fields: ${missing.join(', ')}`);
     error.statusCode = 400;
     error.missing = missing;
     throw error;
+  }
+
+  if (normalizedAsin) {
+    listingPayload.amazonLink = buildAmazonSupplierLink(normalizedAsin, region);
+    listingPayload._asinReference = normalizedAsin;
+  }
+
+  if (amazonData) {
+    attachAmazonScrapedPrice(listingPayload, amazonData);
   }
 
   return { listingPayload, amazonData, template, context: ctx, storeListerApplied: {
@@ -253,22 +425,28 @@ export async function submitDirectListPayload({
   asin = null,
   storeListerApplied = null,
 }) {
-  const ebayResult = await addFixedPriceItemListing(token, listingPayload, { verifyOnly: Boolean(verifyOnly) });
+  const ebayResult = await addFixedPriceItemListing(token, listingPayload, {
+    verifyOnly: Boolean(verifyOnly),
+    categoryMappingAllowed: false,
+  });
 
   if (!verifyOnly && ebayResult.itemId) {
+    const asinRef = String(listingPayload._asinReference || asin || '').trim().toUpperCase();
+    const { customFields: _omitCustomFields, ...listingPayloadRest } = listingPayload;
     await TemplateListing.findOneAndUpdate(
       { templateId, sellerId, customLabel: listingPayload.customLabel },
       {
         $set: {
           templateId,
           sellerId,
-          ...listingPayload,
-          customFields: listingPayload.customFields || {},
+          ...listingPayloadRest,
+          customFields: toCustomFieldsMap(listingPayload.customFields || {}),
           status: 'active',
           ebayItemId: ebayResult.itemId,
           ebayListingUrl: ebayResult.listingUrl,
           ebayPublishedAt: new Date(),
-          _asinReference: listingPayload._asinReference || asin || '',
+          _asinReference: asinRef,
+          amazonLink: listingPayload.amazonLink || buildAmazonSupplierLink(asinRef),
         },
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }

@@ -21,6 +21,38 @@ function formatListingPrice(value) {
   return Number.isFinite(amount) ? `$${amount.toFixed(2)}` : '—';
 }
 
+function formatListedDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function resolveSupplierLink(listing) {
+  const saved = String(listing?.amazonLink || '').trim();
+  if (saved) return saved;
+  const asin = String(listing?._asinReference || '').trim().toUpperCase();
+  if (!asin) return '';
+  return `https://www.amazon.com/dp/${asin}`;
+}
+
+function getCustomFieldEntries(customFields) {
+  if (!customFields) return [];
+  if (customFields instanceof Map) {
+    return Array.from(customFields.entries());
+  }
+  if (typeof customFields === 'object') {
+    return Object.entries(customFields);
+  }
+  return [];
+}
+
 export default function TemplateDatabasePage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
@@ -430,13 +462,13 @@ export default function TemplateDatabasePage() {
                           </Stack>
 
                           {/* Amazon Link */}
-                          {listing.amazonLink && (
+                          {resolveSupplierLink(listing) && (
                             <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
                               <Typography variant="caption" color="text.secondary" sx={{ minWidth: 50 }}>
                                 Link:
                               </Typography>
                               <MuiLink
-                                href={listing.amazonLink}
+                                href={resolveSupplierLink(listing)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 underline="hover"
@@ -452,10 +484,10 @@ export default function TemplateDatabasePage() {
                                   maxWidth: '100%'
                                 }}
                               >
-                                {listing.amazonLink}
+                                {resolveSupplierLink(listing)}
                                 <OpenInNewIcon sx={{ fontSize: 14, flexShrink: 0 }} />
                               </MuiLink>
-                              <IconButton size="small" onClick={() => handleCopy(listing.amazonLink)} title="Copy Link">
+                              <IconButton size="small" onClick={() => handleCopy(resolveSupplierLink(listing))} title="Copy Link">
                                 <ContentCopyIcon sx={{ fontSize: 16 }} />
                               </IconButton>
                             </Stack>
@@ -504,6 +536,9 @@ export default function TemplateDatabasePage() {
                             <Typography variant="body2" color="text.secondary">
                               Qty: <strong>{listing.quantity || 0}</strong>
                             </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Listed: <strong>{formatListedDate(listing.ebayPublishedAt)}</strong>
+                            </Typography>
                           </Stack>
 
                           {/* Actions */}
@@ -536,6 +571,7 @@ export default function TemplateDatabasePage() {
                           <TableCell sx={{ fontWeight: 'bold', width: 100 }}>eBay</TableCell>
                           <TableCell sx={{ fontWeight: 'bold', width: 80 }}>Qty</TableCell>
                           <TableCell sx={{ fontWeight: 'bold', width: 100 }}>Status</TableCell>
+                          <TableCell sx={{ fontWeight: 'bold', width: 150 }}>Listed</TableCell>
                           <TableCell align="right" sx={{ fontWeight: 'bold', width: 100 }}>Actions</TableCell>
                         </TableRow>
                       </TableHead>
@@ -586,10 +622,10 @@ export default function TemplateDatabasePage() {
                               </Stack>
                             </TableCell>
                             <TableCell>
-                              {listing.amazonLink ? (
+                              {resolveSupplierLink(listing) ? (
                                 <Stack direction="row" spacing={0.5} alignItems="center">
                                   <MuiLink
-                                    href={listing.amazonLink}
+                                    href={resolveSupplierLink(listing)}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     underline="hover"
@@ -601,12 +637,12 @@ export default function TemplateDatabasePage() {
                                       gap: 0.5
                                     }}
                                   >
-                                    {listing.amazonLink}
+                                    {resolveSupplierLink(listing)}
                                     <OpenInNewIcon sx={{ fontSize: 14 }} />
                                   </MuiLink>
                                   <IconButton
                                     size="small"
-                                    onClick={() => handleCopy(listing.amazonLink)}
+                                    onClick={() => handleCopy(resolveSupplierLink(listing))}
                                     title="Copy Link"
                                   >
                                     <ContentCopyIcon sx={{ fontSize: 16 }} />
@@ -662,6 +698,11 @@ export default function TemplateDatabasePage() {
                                 color={listing.status === 'active' ? 'success' : 'default'}
                                 sx={{ fontSize: '0.75rem' }}
                               />
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
+                                {formatListedDate(listing.ebayPublishedAt)}
+                              </Typography>
                             </TableCell>
                             <TableCell align="right">
                               <Stack direction="row" spacing={0.5} justifyContent="flex-end">
@@ -761,20 +802,20 @@ export default function TemplateDatabasePage() {
                       </IconButton>
                     </Stack>
                   </Grid>
-                  {selectedListing.amazonLink && (
+                  {resolveSupplierLink(selectedListing) && (
                     <Grid item xs={12}>
                       <Typography variant="caption" color="text.secondary">Amazon Link</Typography>
                       <Stack direction="row" spacing={1} alignItems="center">
                         <MuiLink 
-                          href={selectedListing.amazonLink} 
+                          href={resolveSupplierLink(selectedListing)} 
                           target="_blank" 
                           rel="noopener" 
                           variant="body2"
                           sx={{ wordBreak: 'break-all' }}
                         >
-                          {selectedListing.amazonLink}
+                          {resolveSupplierLink(selectedListing)}
                         </MuiLink>
-                        <IconButton size="small" onClick={() => handleCopy(selectedListing.amazonLink)}>
+                        <IconButton size="small" onClick={() => handleCopy(resolveSupplierLink(selectedListing))}>
                           <ContentCopyIcon sx={{ fontSize: 14 }} />
                         </IconButton>
                       </Stack>
@@ -967,16 +1008,16 @@ export default function TemplateDatabasePage() {
                 </Grid>
               </Box>
 
-              {/* Custom Fields */}
-              {selectedListing.customFields && selectedListing.customFields.size > 0 && (
+              {/* Item Specifics */}
+              {getCustomFieldEntries(selectedListing.customFields).length > 0 && (
                 <>
                   <Divider />
                   <Box>
                     <Typography variant="subtitle2" color="primary" gutterBottom sx={{ fontWeight: 'bold', mb: 1.5 }}>
-                      Custom Fields
+                      Item Specifics
                     </Typography>
                     <Grid container spacing={2}>
-                      {Array.from(selectedListing.customFields.entries()).map(([key, value]) => (
+                      {getCustomFieldEntries(selectedListing.customFields).map(([key, value]) => (
                         <Grid item xs={12} sm={6} key={key}>
                           <Typography variant="caption" color="text.secondary">
                             {key.replace('C:', '')}

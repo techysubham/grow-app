@@ -123,7 +123,11 @@ function parseTradingAck(result, responseKey) {
   };
 }
 
-export function buildAddFixedPriceItemXml(token, listing = {}, { verifyOnly = false } = {}) {
+export function buildAddFixedPriceItemXml(
+  token,
+  listing = {},
+  { verifyOnly = false, categoryMappingAllowed = true } = {}
+) {
   const requestTag = verifyOnly ? 'VerifyAddFixedPriceItemRequest' : 'AddFixedPriceItemRequest';
   const title = String(listing.title || '').trim();
   const description = String(listing.description || '');
@@ -159,7 +163,7 @@ export function buildAddFixedPriceItemXml(token, listing = {}, { verifyOnly = fa
     <Description><![CDATA[${description}]]></Description>
     <PrimaryCategory><CategoryID>${escapeXml(categoryId)}</CategoryID></PrimaryCategory>
     <StartPrice currencyID="USD">${startPrice.toFixed(2)}</StartPrice>
-    <CategoryMappingAllowed>true</CategoryMappingAllowed>
+    <CategoryMappingAllowed>${categoryMappingAllowed ? 'true' : 'false'}</CategoryMappingAllowed>
     <Country>${escapeXml(country)}</Country>
     <Currency>USD</Currency>
     <DispatchTimeMax>${escapeXml(dispatchTime)}</DispatchTimeMax>
@@ -186,9 +190,13 @@ export function buildAddFixedPriceItemXml(token, listing = {}, { verifyOnly = fa
 </${requestTag}>`;
 }
 
-export async function addFixedPriceItemListing(token, listing, { siteId = '0', verifyOnly = false } = {}) {
+export async function addFixedPriceItemListing(
+  token,
+  listing,
+  { siteId = '0', verifyOnly = false, categoryMappingAllowed = true } = {}
+) {
   const callName = verifyOnly ? 'VerifyAddFixedPriceItem' : 'AddFixedPriceItem';
-  const xmlRequest = buildAddFixedPriceItemXml(token, listing, { verifyOnly });
+  const xmlRequest = buildAddFixedPriceItemXml(token, listing, { verifyOnly, categoryMappingAllowed });
 
   const response = await axios.post('https://api.ebay.com/ws/api.dll', xmlRequest, {
     headers: {

@@ -8,7 +8,10 @@ import { fetchAmazonData, applyFieldConfigs, applyOverlayToScrapedImages } from 
 import {
   ensureCustomColumnFieldConfigs,
   filterAutofillConfigsForColumnDefaults,
+  filterAutofillConfigsForCoreFieldDefaults,
 } from '../utils/customColumnAmazonMapping.js';
+import { mergeTemplateCoreFields, resolveTemplateCoreFieldDefaults } from '../utils/templateCoreFieldMerge.js';
+import { mergeDefaultCoreFieldDefaults } from '../constants/defaultDescriptionTemplate.js';
 import { generateSKUFromASIN, generateSKUWithCount } from '../utils/skuGenerator.js';
 import { getEffectiveTemplate } from '../utils/templateMerger.js';
 import { getUsageStats, getFieldExtractionStats, getRecentErrors, checkQuotaStatus } from '../utils/apiUsageTracker.js';
@@ -32,7 +35,7 @@ import DirectListJob, {
   DIRECT_LIST_JOB_MAX_DELAY_SECONDS,
 } from '../models/DirectListJob.js';
 import { chunkDirectListAsins } from '../lib/directListJobRunner.js';
-import { enrichListingItemSpecifics } from '../utils/ebayItemSpecificsEnrichment.js';
+import { enrichListingItemSpecifics, applyCustomColumnDefaults } from '../utils/ebayItemSpecificsEnrichment.js';
 import { joinItemPhotoUrls, mergeItemPhotoUrls } from '../utils/itemPhotoUrls.js';
 
 const router = express.Router();
@@ -44,30 +47,25 @@ function toPlainTemplateColumn(col) {
   return { ...col };
 }
 
-function resolveAutofillFieldConfigs(template) {
+function resolveAutofillFieldConfigs(template, coreFieldDefaults) {
   const raw = Array.isArray(template?.asinAutomation?.fieldConfigs)
     ? template.asinAutomation.fieldConfigs
     : [];
   const customColumns = resolveAutofillCustomColumns(template);
   const merged = ensureCustomColumnFieldConfigs(raw, customColumns);
-  return filterAutofillConfigsForColumnDefaults(merged, customColumns);
+  const defaults = coreFieldDefaults ?? mergeDefaultCoreFieldDefaults(
+    template?.coreFieldDefaults && typeof template.coreFieldDefaults.toObject === 'function'
+      ? template.coreFieldDefaults.toObject()
+      : (template?.coreFieldDefaults || {})
+  );
+  const columnFiltered = filterAutofillConfigsForColumnDefaults(merged, customColumns);
+  return filterAutofillConfigsForCoreFieldDefaults(columnFiltered, defaults);
 }
 
 function resolveAutofillCustomColumns(template) {
   return Array.isArray(template?.customColumns)
     ? template.customColumns.map(toPlainTemplateColumn)
     : [];
-}
-
-function applyCustomColumnDefaults(customFieldsMerged, customColumns = []) {
-  for (const col of customColumns) {
-    const defaultValue = String(col?.defaultValue ?? '').trim();
-    if (!defaultValue || !col?.name) continue;
-    const current = String(customFieldsMerged[col.name] ?? '').trim();
-    if (!current || current.toLowerCase() === 'does not apply') {
-      customFieldsMerged[col.name] = col.defaultValue;
-    }
-  }
 }
 
 function fieldConfigsUsePiSources(fieldConfigs = []) {
@@ -112,7 +110,8 @@ async function runTemplateAutofill(template, amazonData, fieldConfigs, pricingCo
     pricingConfig,
     customColumns
   );
-  const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
+  const coreFieldDefaults = resolveTemplateCoreFieldDefaults(template);
+  const mergedCoreFields = mergeTemplateCoreFields(coreFieldDefaults, coreFields, amazonData);
   const customFieldsMerged = mergeReviewIntoCustomFields(customFields, coreFields, customColumns);
   applyCustomColumnDefaults(customFieldsMerged, customColumns);
   return { coreFields, customFields, customFieldsMerged, mergedCoreFields, pricingCalculation };
@@ -268,42 +267,6 @@ function shouldWarnMissingDescription(mergedCoreFields = {}, amazonData = {}) {
   const mergedDesc = String(mergedCoreFields?.description || '').trim();
   const sourceDesc = String(amazonData?.description || '').trim();
   return !mergedDesc && !sourceDesc;
-}
-
-function mergeTemplateCoreFields(coreFieldDefaults = {}, autoCoreFields = {}, amazonData = {}) {
-  const merged = {
-    ...(coreFieldDefaults || {}),
-    ...(autoCoreFields || {})
-  };
-
-  // Apply resilient fallbacks so preview still has usable output
-  // even when field configs are missing or incomplete.
-  if (!String(merged.title || '').trim() && String(amazonData?.title || '').trim()) {
-    merged.title = String(amazonData.title).trim().slice(0, 80);
-  }
-
-  if (!String(merged.itemPhotoUrl || '').trim() && Array.isArray(amazonData?.images) && amazonData.images.length) {
-    merged.itemPhotoUrl = joinItemPhotoUrls(amazonData.images);
-  }
-
-  if (merged.startPrice === undefined || merged.startPrice === null || merged.startPrice === '') {
-    const parsedAmazonPrice = parseAmazonPriceToNumber(amazonData?.price);
-    // Keep the listing valid even when Amazon price is unavailable.
-    merged.startPrice = parsedAmazonPrice ? parsedAmazonPrice.toFixed(2) : '0.01';
-  }
-
-  // Empty strings from a failed AI (or incomplete mapping) must not wipe template defaults or scrape text.
-  if (!String(merged.description || '').trim()) {
-    const fromDefaults = String(coreFieldDefaults?.description || '').trim();
-    const fromAmazon = String(amazonData?.description || '').trim();
-    if (fromDefaults) {
-      merged.description = coreFieldDefaults.description;
-    } else if (fromAmazon) {
-      merged.description = fromAmazon;
-    }
-  }
-
-  return merged;
 }
 
 function getImageCount(images) {
@@ -474,7 +437,7 @@ router.get('/database-view', requireAuth, async (req, res) => {
           }
         })
         .populate('templateId', 'name')
-        .sort({ createdAt: -1 })
+        .sort({ ebayPublishedAt: -1, createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit)),
       TemplateListing.countDocuments(query)
@@ -1588,7 +1551,8 @@ router.post('/autofill-from-asin', requireAuth, async (req, res) => {
       pricingConfig,
       resolveAutofillCustomColumns(template)
     );
-    const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
+    const coreFieldDefaults = resolveTemplateCoreFieldDefaults(template);
+    const mergedCoreFields = mergeTemplateCoreFields(coreFieldDefaults, coreFields, amazonData);
     if (amazonData?.images?.length) {
       mergedCoreFields.itemPhotoUrl = mergeItemPhotoUrls(mergedCoreFields.itemPhotoUrl, amazonData.images);
     }
@@ -1819,7 +1783,8 @@ router.post('/bulk-autofill-from-asins', requireAuth, async (req, res) => {
             pricingConfig,
             resolveAutofillCustomColumns(template)
           );
-          const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
+          const coreFieldDefaults = resolveTemplateCoreFieldDefaults(template);
+    const mergedCoreFields = mergeTemplateCoreFields(coreFieldDefaults, coreFields, amazonData);
           
           return {
             asin,
@@ -2451,7 +2416,8 @@ router.post('/bulk-preview', requireAuth, async (req, res) => {
         );
         
         // Apply template core field defaults as base layer (autofilled fields override these)
-        const mergedCoreFields = mergeTemplateCoreFields(template.coreFieldDefaults, coreFields, amazonData);
+        const coreFieldDefaults = resolveTemplateCoreFieldDefaults(template);
+    const mergedCoreFields = mergeTemplateCoreFields(coreFieldDefaults, coreFields, amazonData);
         
         applyCustomColumnDefaults(customFieldsMerged, template?.customColumns);
         

@@ -21,11 +21,15 @@ const serverRoot = path.join(__dirname, '..');
 dotenv.config({ path: path.join(serverRoot, '.env'), override: true });
 
 const scraperProvider = String(process.env.SCRAPER_PROVIDER || 'scraperapi').trim().toLowerCase();
-const scraperKeyLen = String(process.env.SCRAPER_API_KEY || '').trim().length;
+const scraperKeyRaw = String(process.env.SCRAPER_API_KEY || '').trim();
+const scraperKeyLen = scraperKeyRaw.length;
+const scraperKeyHint = scraperKeyLen >= 8
+  ? `${scraperKeyRaw.slice(0, 4)}…${scraperKeyRaw.slice(-4)}`
+  : '(missing or too short)';
 const gmailUser = String(process.env.GMAIL_IMAP_USER || '').trim();
 const gmailPassLen = String(process.env.GMAIL_IMAP_APP_PASSWORD || '').trim().length;
 console.log(
-  `[env] Loaded ${path.join(serverRoot, '.env')} | scraper=${scraperProvider} keyLen=${scraperKeyLen} | gmail=${gmailUser && gmailPassLen ? 'configured' : 'missing'}`
+  `[env] Loaded ${path.join(serverRoot, '.env')} | scraper=${scraperProvider} keyLen=${scraperKeyLen} key=${scraperKeyHint} | gmail=${gmailUser && gmailPassLen ? 'configured' : 'missing'}`
 );
 
 import { connectToDatabase } from './lib/db.js';

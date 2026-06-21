@@ -4,6 +4,8 @@ import {
   normalizeCustomColumnKey,
   readAmazonFieldByKey,
   resolveCustomColumnValue,
+  customColumnHasDefault,
+  filterCustomFieldsToTemplateColumns,
 } from './customColumnAmazonMapping.js';
 
 const STORAGE_CAPACITY_PI_PATHS = [
@@ -20,6 +22,12 @@ export function applyCustomColumnDefaults(customFieldsMerged, customColumns = []
   for (const col of customColumns) {
     const defaultValue = String(col?.defaultValue ?? '').trim();
     if (!defaultValue || !col?.name) continue;
+
+    if (customColumnHasDefault(col)) {
+      customFieldsMerged[col.name] = col.defaultValue;
+      continue;
+    }
+
     const current = String(customFieldsMerged[col.name] ?? '').trim();
     if (!current || current.toLowerCase() === 'does not apply') {
       customFieldsMerged[col.name] = col.defaultValue;
@@ -39,7 +47,9 @@ function setAspectValue(fields, customColumns, aspectName, value) {
   if (!text || text.toLowerCase() === 'does not apply') return;
 
   const column = findCustomColumnByAspect(customColumns, aspectName);
-  const fieldKey = column?.name || aspectName;
+  if (!column?.name) return;
+
+  const fieldKey = column.name;
   const current = String(fields[fieldKey] ?? '').trim();
   if (current && current.toLowerCase() !== 'does not apply') return;
 
@@ -71,7 +81,7 @@ export function enrichListingItemSpecifics(listing = {}, customColumns = [], ama
 
   for (const col of customColumns) {
     const name = col?.name;
-    if (!name) continue;
+    if (!name || customColumnHasDefault(col)) continue;
 
     const current = String(customFields[name] ?? '').trim();
     if (current && current.toLowerCase() !== 'does not apply') continue;
@@ -97,12 +107,22 @@ export function enrichListingItemSpecifics(listing = {}, customColumns = [], ama
 
   if (amazonData) {
     setAspectValue(customFields, customColumns, 'Brand', amazonData.brand);
-    setAspectValue(customFields, customColumns, 'Storage Capacity', readStorageCapacityFromAmazon(amazonData));
+    const storageCol = findCustomColumnByAspect(customColumns, 'Storage Capacity');
+    if (!storageCol || !customColumnHasDefault(storageCol)) {
+      setAspectValue(
+        customFields,
+        customColumns,
+        'Storage Capacity',
+        readStorageCapacityFromAmazon(amazonData)
+      );
+    }
   }
+
+  applyCustomColumnDefaults(customFields, customColumns);
 
   return {
     ...listing,
-    customFields,
+    customFields: filterCustomFieldsToTemplateColumns(customFields, customColumns),
   };
 }
 

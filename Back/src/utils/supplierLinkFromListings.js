@@ -35,9 +35,21 @@ function extractOrderItemNumber(order) {
 }
 
 function buildAmazonLinkFromAsin(asin) {
-    const clean = String(asin || '').trim();
+    return buildAmazonSupplierLink(asin, 'US');
+}
+
+const AMAZON_REGION_HOSTS = {
+    US: 'www.amazon.com',
+    UK: 'www.amazon.co.uk',
+    CA: 'www.amazon.ca',
+    AU: 'www.amazon.com.au',
+};
+
+export function buildAmazonSupplierLink(asin, region = 'US') {
+    const clean = String(asin || '').trim().toUpperCase();
     if (!clean) return '';
-    return `https://www.amazon.com/dp/${clean}`;
+    const host = AMAZON_REGION_HOSTS[String(region || 'US').trim().toUpperCase()] || AMAZON_REGION_HOSTS.US;
+    return `https://${host}/dp/${clean}`;
 }
 
 /** Prefer saved TemplateListing.amazonLink; fall back to /dp/{ASIN}. */
