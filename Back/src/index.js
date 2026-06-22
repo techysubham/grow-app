@@ -216,6 +216,8 @@ app.use('/api/amazon-lookup', amazonLookupRoutes);
 app.use('/api/product-umbrellas', productUmbrellaRoutes);
 app.use('/api/custom-columns', customColumnsRoutes);
 app.use('/api/amazon-pi-source-columns', amazonPiSourceColumnsRoutes);
+// Alias without "amazon" in the path — some browser extensions block /amazon-* URLs.
+app.use('/api/pi-source-columns', amazonPiSourceColumnsRoutes);
 app.use('/api/listing-templates', listingTemplateRoutes);
 app.use('/api/template-listings', templateListingsRoutes);
 app.use('/api/template-overrides', templateOverridesRoutes);

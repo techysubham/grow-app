@@ -30,6 +30,53 @@ const REGIONS = [
   { value: 'AU', label: 'Australia' },
 ];
 
+/** Prefer path without "amazon" (ad blockers); fall back for older backends. */
+const PI_COLUMNS_API_CANDIDATES = ['/pi-source-columns', '/amazon-pi-source-columns'];
+let resolvedPiColumnsBase = null;
+
+async function requestPiColumns(requestForBase) {
+  const bases = resolvedPiColumnsBase
+    ? [resolvedPiColumnsBase]
+    : PI_COLUMNS_API_CANDIDATES;
+
+  let lastError;
+  for (const base of bases) {
+    try {
+      const response = await requestForBase(base);
+      resolvedPiColumnsBase = base;
+      return response;
+    } catch (e) {
+      lastError = e;
+      if (e?.response?.status !== 404) throw e;
+    }
+  }
+  throw lastError;
+}
+
+function piColumnsGet(path = '') {
+  return requestPiColumns((base) => api.get(`${base}${path}`));
+}
+
+function piColumnsPost(path, body, options) {
+  return requestPiColumns((base) => api.post(`${base}${path}`, body, options));
+}
+
+function piColumnsDelete(path) {
+  return requestPiColumns((base) => api.delete(`${base}${path}`));
+}
+
+function formatApiError(e, fallback) {
+  const serverMsg = e?.response?.data?.error;
+  if (serverMsg) return serverMsg;
+  if (e?.response?.status === 404) {
+    return 'API route not found. Deploy the latest backend and restart it, then hard-refresh this page.';
+  }
+  if (!e?.response && e?.message) {
+    return 'Cannot reach the API server. Restart the backend, confirm VITE_API_URL, or pause ad blockers for this site.';
+  }
+  return e?.message || fallback;
+}
+
 export default function AmazonPiSourceColumnsPage() {
   const [asin, setAsin] = useState('');
   const [region, setRegion] = useState('US');
@@ -41,16 +88,18 @@ export default function AmazonPiSourceColumnsPage() {
   const [loadingSaved, setLoadingSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadWarning, setLoadWarning] = useState('');
   const [success, setSuccess] = useState('');
 
   const loadSaved = useCallback(async () => {
     setLoadingSaved(true);
-    setError('');
+    setLoadWarning('');
     try {
-      const { data } = await api.get('/amazon-pi-source-columns');
+      const { data } = await piColumnsGet();
       setSavedColumns(data.columns || []);
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || 'Failed to load saved columns');
+      setSavedColumns([]);
+      setLoadWarning(formatApiError(e, 'Failed to load saved columns'));
     } finally {
       setLoadingSaved(false);
     }
@@ -75,8 +124,8 @@ export default function AmazonPiSourceColumnsPage() {
     }
     setLoadingPreview(true);
     try {
-      const { data } = await api.post(
-        '/amazon-pi-source-columns/preview-from-asin',
+      const { data } = await piColumnsPost(
+        '/preview-from-asin',
         { asin: normalized, region },
         { timeout: 120000 }
       );
@@ -88,7 +137,7 @@ export default function AmazonPiSourceColumnsPage() {
         setSuccess('Scrape succeeded but product_information was empty for this ASIN.');
       }
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || 'Preview failed');
+      setError(formatApiError(e, 'Preview failed'));
     } finally {
       setLoadingPreview(false);
     }
@@ -127,7 +176,7 @@ export default function AmazonPiSourceColumnsPage() {
     }
     setSaving(true);
     try {
-      const { data } = await api.post('/amazon-pi-source-columns/import-rows', {
+      const { data } = await piColumnsPost('/import-rows', {
         sourceAsin: previewMeta.asin,
         rows,
       });
@@ -136,7 +185,7 @@ export default function AmazonPiSourceColumnsPage() {
         `Saved ${data.saved ?? rows.length} column(s). They now appear under Amazon Source Field on Manage Templates.`
       );
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || 'Save failed');
+      setError(formatApiError(e, 'Save failed'));
     } finally {
       setSaving(false);
     }
@@ -146,11 +195,11 @@ export default function AmazonPiSourceColumnsPage() {
     if (!window.confirm('Remove this column from the catalog?')) return;
     setError('');
     try {
-      await api.delete(`/amazon-pi-source-columns/${id}`);
+      await piColumnsDelete(`/${id}`);
       await loadSaved();
       setSuccess('Column removed.');
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || 'Delete failed');
+      setError(formatApiError(e, 'Delete failed'));
     }
   };
 
@@ -172,6 +221,11 @@ export default function AmazonPiSourceColumnsPage() {
         that ASIN; at listing time each row resolves from the current product&apos;s <code>product_information</code>.
       </Alert>
 
+      {loadWarning && (
+        <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setLoadWarning('')}>
+          {loadWarning}
+        </Alert>
+      )}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
           {error}

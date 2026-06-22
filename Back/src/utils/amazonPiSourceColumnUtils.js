@@ -49,16 +49,54 @@ export function walkProductInformation(pi, visitor, prefix = '') {
   }
 }
 
+function canonicalProductInformationPath(jsonPath) {
+  return String(jsonPath || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, '_')
+    .replace(/\./g, '__')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function isSnakeCasePath(path) {
+  return /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$/.test(String(path || ''));
+}
+
+/** Collapse Title Case + snake_case alias pairs from normalizeProductInformationKeys. */
+export function dedupeProductInformationRows(rows) {
+  const byCanonical = new Map();
+  for (const row of rows) {
+    const canon = canonicalProductInformationPath(row.jsonPath);
+    const prev = byCanonical.get(canon);
+    if (!prev) {
+      byCanonical.set(canon, row);
+      continue;
+    }
+    const aSnake = isSnakeCasePath(prev.jsonPath);
+    const bSnake = isSnakeCasePath(row.jsonPath);
+    if (aSnake && !bSnake) continue;
+    if (bSnake && !aSnake) {
+      byCanonical.set(canon, row);
+      continue;
+    }
+    if (row.jsonPath.length < prev.jsonPath.length) {
+      byCanonical.set(canon, row);
+    }
+  }
+  return Array.from(byCanonical.values());
+}
+
 /**
  * @returns {{ jsonPath: string, value: string }[]}
  */
-export function flattenProductInformationRows(pi) {
+export function flattenProductInformationRows(pi, { dedupe = true } = {}) {
   const rows = [];
   if (pi == null || typeof pi !== 'object' || Array.isArray(pi)) return rows;
   walkProductInformation(pi, (jsonPath, raw) => {
     rows.push({ jsonPath, value: productInfoLeafToString(raw) });
   });
-  return rows;
+  return dedupe ? dedupeProductInformationRows(rows) : rows;
 }
 
 export function jsonPathToAmazonFieldKey(jsonPath) {
@@ -68,6 +106,48 @@ export function jsonPathToAmazonFieldKey(jsonPath) {
     .replace(/[^a-z0-9.]+/g, '_')
     .replace(/\./g, '__');
   return `amazon_pi_${safe || 'unknown'}`;
+}
+
+/** Flat Title Case keys → snake_case for Mongo / getByPath (nested paths keep dots). */
+export function resolveStorageJsonPath(jsonPath) {
+  const trimmed = String(jsonPath || '').trim();
+  if (!trimmed) return '';
+  if (/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$/.test(trimmed)) return trimmed;
+  if (trimmed.includes('.')) return trimmed;
+  return trimmed
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+const AMAZON_PI_KEY_RE = /^amazon_pi_[a-z0-9_]+$/;
+const MAX_KEY_LEN = 120;
+const MAX_LABEL_LEN = 200;
+const MAX_JSON_PATH_LEN = 300;
+
+export function buildAmazonPiCatalogEntry(row = {}) {
+  const rawPath = String(row.jsonPath || '').trim();
+  if (!rawPath) return null;
+
+  const jsonPath = resolveStorageJsonPath(rawPath).slice(0, MAX_JSON_PATH_LEN);
+  if (!jsonPath) return null;
+
+  const key = jsonPathToAmazonFieldKey(jsonPath);
+  if (!AMAZON_PI_KEY_RE.test(key) || key.length > MAX_KEY_LEN) return null;
+
+  const label = (
+    String(row.label || '').trim() || jsonPathToDefaultLabel(jsonPath)
+  ).slice(0, MAX_LABEL_LEN);
+
+  return {
+    key,
+    label,
+    jsonPath,
+    lastSampleValue: String(row.value ?? row.sampleValue ?? '').slice(0, 2000),
+  };
 }
 
 export function jsonPathToDefaultLabel(jsonPath) {

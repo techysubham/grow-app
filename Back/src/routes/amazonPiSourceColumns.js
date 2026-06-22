@@ -4,6 +4,8 @@ import { requireAuth, requirePageAccess } from '../middleware/auth.js';
 import AmazonPiSourceColumn from '../models/AmazonPiSourceColumn.js';
 import { scrapeAmazonProductWithScraperAPI } from '../utils/scraperApiProduct.js';
 import {
+  buildAmazonPiCatalogEntry,
+  dedupeProductInformationRows,
   flattenProductInformationRows,
   jsonPathToAmazonFieldKey,
   jsonPathToDefaultLabel
@@ -13,8 +15,6 @@ import { invalidateAmazonPiSourceColumnsAutofillCache } from '../utils/asinAutof
 const router = express.Router();
 
 const REGION_SET = new Set(['US', 'UK', 'CA', 'AU']);
-const JSON_PATH_RE = /^[a-zA-Z0-9_.]+$/;
-
 function normalizeAsin(raw) {
   return String(raw || '')
     .trim()
@@ -55,8 +55,13 @@ router.get(
   requireAuth,
   requirePageAccess('AmazonPiSourceColumns'),
   async (_req, res) => {
-    const columns = await AmazonPiSourceColumn.find({}).sort({ label: 1 }).lean();
-    res.json({ columns });
+    try {
+      const columns = await AmazonPiSourceColumn.find({}).sort({ label: 1 }).lean();
+      res.json({ columns });
+    } catch (e) {
+      console.error('[amazon-pi-source-columns] list failed:', e);
+      res.status(500).json({ error: e.message || 'Failed to load saved columns' });
+    }
   }
 );
 
@@ -102,43 +107,70 @@ router.post(
   requireAuth,
   requirePageAccess('AmazonPiSourceColumns'),
   async (req, res) => {
-    const rows = req.body?.rows;
-    const sourceAsin = normalizeAsin(req.body?.sourceAsin || '');
-    if (!Array.isArray(rows) || rows.length === 0) {
-      return res.status(400).json({ error: 'rows must be a non-empty array' });
-    }
-    if (rows.length > 500) {
-      return res.status(400).json({ error: 'Maximum 500 rows per import' });
-    }
+    try {
+      const rows = req.body?.rows;
+      const sourceAsin = normalizeAsin(req.body?.sourceAsin || '');
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(400).json({ error: 'rows must be a non-empty array' });
+      }
+      if (rows.length > 500) {
+        return res.status(400).json({ error: 'Maximum 500 rows per import' });
+      }
 
-    let saved = 0;
-    for (const row of rows) {
-      const jsonPath = String(row?.jsonPath || '').trim();
-      if (!jsonPath || !JSON_PATH_RE.test(jsonPath)) continue;
-      const key = jsonPathToAmazonFieldKey(jsonPath);
-      if (!/^amazon_pi_[a-z0-9_]+$/.test(key)) continue;
-      const label = String(row?.label || '').trim() || jsonPathToDefaultLabel(jsonPath);
-      const lastSampleValue = String(row?.value ?? row?.sampleValue ?? '').slice(0, 2000);
-
-      await AmazonPiSourceColumn.findOneAndUpdate(
-        { jsonPath },
-        {
-          $set: {
-            key,
-            label,
-            jsonPath,
-            lastSampleValue,
-            lastSourceAsin: sourceAsin.length === 10 ? sourceAsin : ''
-          }
-        },
-        { upsert: true, new: true }
+      const deduped = dedupeProductInformationRows(
+        rows.map((row) => ({
+          jsonPath: String(row?.jsonPath || '').trim(),
+          value: row?.value ?? row?.sampleValue ?? '',
+          label: String(row?.label || '').trim(),
+        })).filter((row) => row.jsonPath)
       );
-      saved += 1;
-    }
 
-    invalidateAmazonPiSourceColumnsAutofillCache();
-    const columns = await AmazonPiSourceColumn.find({}).sort({ label: 1 }).lean();
-    res.json({ ok: true, saved, columns });
+      const lastSourceAsin = sourceAsin.length === 10 ? sourceAsin : '';
+      const entriesByKey = new Map();
+
+      for (const row of deduped) {
+        const entry = buildAmazonPiCatalogEntry(row);
+        if (!entry) continue;
+        entriesByKey.set(entry.key, entry);
+      }
+
+      const entries = Array.from(entriesByKey.values());
+      const skipped = deduped.length - entries.length;
+
+      if (entries.length === 0) {
+        return res.status(400).json({
+          error: skipped > 0
+            ? 'No valid rows to save. Paths may be invalid or too long.'
+            : 'No rows to save.',
+        });
+      }
+
+      const ops = entries.map((entry) => ({
+        updateOne: {
+          filter: { key: entry.key },
+          update: {
+            $set: {
+              ...entry,
+              lastSourceAsin,
+            },
+          },
+          upsert: true,
+        },
+      }));
+
+      await AmazonPiSourceColumn.bulkWrite(ops, { ordered: false });
+      const saved = entries.length;
+
+      invalidateAmazonPiSourceColumnsAutofillCache();
+      const columns = await AmazonPiSourceColumn.find({}).sort({ label: 1 }).lean();
+      res.json({ ok: true, saved, skipped, columns });
+    } catch (e) {
+      console.error('[amazon-pi-source-columns] import-rows failed:', e);
+      const message = e.code === 11000
+        ? 'Duplicate column key — refresh the page and save again.'
+        : (e.message || 'Save failed');
+      res.status(500).json({ error: message });
+    }
   }
 );
 
